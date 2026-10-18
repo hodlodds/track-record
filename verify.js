@@ -93,6 +93,7 @@ export class Evidence {
     return undefined;
   }
 }
+export const REVEAL_GRACE_S = 7200; // a due hour may still be waiting for the hourly publication run
 export const DOWNGRADE = {high: 'medium', medium: 'low', low: 'low', experimental: 'experimental'};
 export function canonicalLines(text) {
   if (text && !text.endsWith('\n')) throw Error('Incomplete canonical line.');
@@ -237,14 +238,17 @@ async function startUI() {
             statusLine(steps, 'pass', `2. The chain links to a FreeTSA time stamp at ${new Date(generated * 1000).toISOString()} (+${generated - request.t} s). Its signature and certificate chain check out in this browser.`);
           }
           const due = revealDue(request.t, status.delay_hours);
+          const advertised = Boolean(status.revealed_through) && request.t <= minute(status.revealed_through);
+          const pending = () => statusLine(steps, 'pending', `3. Not yet revealed. Scheduled after ${new Date(due * 1000).toISOString()}; publication runs hourly.`);
+          // Not due yet: nothing to download (and nothing to ask the reveal server).
+          if (!advertised && Date.now() / 1000 < due) { pending(); continue; }
           const path = iso(request.t).slice(0, 10) + '/' + iso(request.t).slice(11, 13) + '.tsv.gz';
           let compressed;
           try { compressed = await get(status.url.replace(/\/$/, '') + '/' + path); }
           catch (error) {
-            if (error.status !== 404) throw error;
-            if (Date.now() / 1000 >= due || (status.revealed_through && request.t <= minute(status.revealed_through))) throw Error('The reveal is missing although due or advertised.');
-            statusLine(steps, 'pending', `3. Not yet revealed. Scheduled after ${new Date(due * 1000).toISOString()}; publication runs hourly.`);
-            continue;
+            if (error.status !== 404) throw Error(`Could not download the revealed file (${error.message}).`);
+            if (!advertised && Date.now() / 1000 < due + REVEAL_GRACE_S) { pending(); continue; }
+            throw Error('The reveal is missing although due or advertised.');
           }
           if (!blockCache.has(request.t)) {
             if (typeof DecompressionStream === 'undefined') throw Error('This browser cannot decompress gzip. Use a current browser or verify.py.');

@@ -21,6 +21,7 @@ import urllib.request
 RAW = 'https://raw.githubusercontent.com/hodlodds/track-record/main/'
 GENESIS = '0' * 64
 LINE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})')
+REVEAL_GRACE_S = 7200  # a due hour may still be waiting for the hourly publication run
 DOWNGRADE = {'high': 'medium', 'medium': 'low', 'low': 'low', 'experimental': 'experimental'}
 INDEX = re.compile(r'(\d{4}-\d{2}-\d{2}) first=(\S+) last=(\S+) lines=([1-9]\d*) prev=([a-f0-9]{64}) head=([a-f0-9]{64})')
 
@@ -326,16 +327,19 @@ class Source:
         if entry['t'] in self.blocks:
             return self.blocks[entry['t']], None
         path = entry['minute'][:10] + '/' + entry['minute'][11:13] + '.tsv.gz'
+        due = (entry['t'] // 3600 + 1) * 3600 + self.status['delay_hours'] * 3600
+        through = self.status.get('revealed_through')
+        advertised = bool(through) and entry['t'] <= minute(through)
+        if not advertised and time.time() < due:
+            return None, due  # Not due yet: there is nothing to download.
         try:
             data = self.read(path, reveal=True)
         except (FileNotFoundError, urllib.error.HTTPError) as exc:
             if isinstance(exc, urllib.error.HTTPError) and exc.code != 404:
                 raise
-            due = (entry['t'] // 3600 + 1) * 3600 + self.status['delay_hours'] * 3600
-            through = self.status.get('revealed_through')
-            if (through and entry['t'] <= minute(through)) or time.time() >= due:
-                raise ValueError('Reveal is missing although due or advertised: ' + path)
-            return None, due
+            if not advertised and time.time() < due + REVEAL_GRACE_S:
+                return None, due  # Publication runs hourly.
+            raise ValueError('Reveal is missing although due or advertised: ' + path)
         rows = canonical_lines(gzip.decompress(data))
         if any(r['t'] // 3600 != entry['t'] // 3600 for r in rows):
             raise ValueError('Reveal contains rows outside its hour')

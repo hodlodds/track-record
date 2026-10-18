@@ -146,8 +146,11 @@ its indexed `prev`, ideally after retaining an earlier full audit and head.
 An hour becomes eligible **24 hours after it ends**, then is published on the
 hourly run at minute :35 UTC. For example, October 18's 16:00–16:59 UTC hour is
 due October 19 at 17:00 and normally appears at 17:35. The delay is configurable
-and published in the status file. Between eligibility and publication, a missing
-file is reported as due/missing; this is deliberately visible, not a false pass.
+and published in the status file (it is 48 hours until the public launch, when the
+reveal server opens). A minute that is not due yet is reported as pending and
+nothing is downloaded. Once due, a missing file stays pending for up to two hours
+(publication runs hourly) and then fails; any hour covered by `revealed_through`
+must exist. A missing due file is deliberately visible, never a pass.
 
 Every minute of an hour must already be committed and match its private archive
 before the hour is published. For the launch hour only, checking starts at the
