@@ -1,0 +1,6 @@
+{
+  "schema": "hodlodds.reveal.v1",
+  "revealed_through": null,
+  "delay_hours": 24,
+  "url": "https://api.hodlodds.com/track/reveal/"
+}
