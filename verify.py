@@ -4,6 +4,7 @@ import argparse
 import calendar
 import gzip
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -20,7 +21,7 @@ import urllib.request
 
 RAW = 'https://raw.githubusercontent.com/hodlodds/track-record/main/'
 GENESIS = '0' * 64
-LINE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})')
+LINE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*|paused) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})')
 REVEAL_GRACE_S = 7200  # a due hour may still be waiting for the hourly publication run
 DOWNGRADE = {'high': 'medium', 'medium': 'low', 'low': 'low', 'experimental': 'experimental'}
 INDEX = re.compile(r'(\d{4}-\d{2}-\d{2}) first=(\S+) last=(\S+) lines=([1-9]\d*) prev=([a-f0-9]{64}) head=([a-f0-9]{64})')
@@ -59,7 +60,7 @@ def parse_chain(data, previous=GENESIS, after=None):
             raise ValueError('Chain minutes must strictly increase')
         if sha(('%s %s %s %s' % (previous, stamp, count, block)).encode()) != link:
             raise ValueError('Broken chain link at ' + stamp)
-        result.append(dict(minute=stamp, t=t, rows=int(count), sha256=block, chain=link, line=line))
+        result.append(dict(minute=stamp, t=t, rows=0 if count == 'paused' else int(count), paused=count == 'paused', sha256=block, chain=link, line=line))
         previous, after = link, t
     return result
 
@@ -208,12 +209,16 @@ def verify_tsa(txt, token, ca, cert):
 
 
 class Source:
-    def __init__(self, directory=None, base=RAW, reveal_dir=None):
+    def __init__(self, directory=None, base=RAW, reveal_dir=None, *, sleep=time.sleep,
+                 monotonic=time.monotonic):
         self.directory = Path(directory) if directory else None
         self.base = base
         self.reveal_dir = Path(reveal_dir) if reveal_dir else None
         self.cache = {}
         self.blocks = {}
+        self.sleep = sleep
+        self.monotonic = monotonic
+        self.next_reveal_at = 0
         self.status = json.loads(self.read('reveal-status.json'))
         if self.status.get('schema') != 'hodlodds.reveal.v1':
             raise ValueError('Unknown reveal status schema')
@@ -300,10 +305,29 @@ class Source:
                 url = base.rstrip('/') + '/' + path
                 if not url.startswith('https://'):
                     raise ValueError('Only HTTPS downloads are allowed')
-                with urllib.request.urlopen(url, timeout=30) as response:
-                    if not response.url.startswith('https://'):
-                        raise ValueError('Refusing non-HTTPS redirect')
-                    data = response.read()
+                # Five attempts total; only temporary overload responses retry.
+                for attempt in range(5):
+                    if reveal:
+                        delay = self.next_reveal_at - self.monotonic()
+                        if delay > 0:
+                            self.sleep(delay)
+                        self.next_reveal_at = self.monotonic() + 0.25
+                    try:
+                        with urllib.request.urlopen(url, timeout=30) as response:
+                            if not response.url.startswith('https://'):
+                                raise ValueError('Refusing non-HTTPS redirect')
+                            data = response.read()
+                        break
+                    except urllib.error.HTTPError as exc:
+                        if exc.code not in (429, 503) or attempt == 4:
+                            raise
+                        retry_after = (exc.headers.get('Retry-After', '') if exc.headers else '').strip()
+                        try:
+                            delay = min(30, int(retry_after)) if re.fullmatch(r'[0-9]+', retry_after) else 5
+                        except ValueError:
+                            delay = 5
+                        exc.close()
+                        self.sleep(delay)
             self.cache[key] = data
         return self.cache[key]
 
@@ -324,6 +348,8 @@ class Source:
         return self.stamp_cache[path], path
 
     def revealed(self, entry):
+        if entry.get('paused'):
+            raise ValueError('not committed: storage paused')
         if entry['t'] in self.blocks:
             return self.blocks[entry['t']], None
         path = entry['minute'][:10] + '/' + entry['minute'][11:13] + '.tsv.gz'
@@ -347,6 +373,64 @@ class Source:
         return self.blocks[entry['t']], None
 
 
+def report_module():
+    spec = importlib.util.spec_from_file_location('hodlodds_report_metrics', Path(__file__).with_name('report_metrics.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def report_rows(source, day, report, metrics=None):
+    """Rehash every committed block, including experimental and empty blocks."""
+    m = metrics or report_module()
+    m.validate_report(report, source.index, source.status)
+    if report['day'] != day:
+        raise ValueError('Report filename/day mismatch')
+    entries = {e['t']:e for e in source.day(day)}
+    first_hour = minute(next(iter(source.index.values()))['first']) // 3600
+    start = m.epoch(day)
+    joined = []
+    for hh in range(24):
+        hour = start + hh*3600
+        path = '%s/%02d' % (day, hh)
+        rows = canonical_lines(gzip.decompress(source.read(path+'.tsv.gz', reveal=True))) if hour//3600 >= first_hour else []
+        grouped = {}
+        for r in rows:
+            if not hour <= r['t'] < hour+3600 or r['t'] not in entries:
+                raise ValueError('Revealed row outside committed hour')
+            grouped.setdefault(r['t'],[]).append(r)
+        for t in range(hour,hour+3600,60):
+            if t in entries:
+                check_block(grouped.get(t,[]),entries[t])
+        labels = source.read(path+'.labels.tsv.gz',reveal=True)
+        if sha(labels)!=report['label_files']['%02d'%hh]:
+            raise ValueError('Labels fingerprint mismatch: '+path)
+        joined.extend(m.join_labels(rows,labels))
+    return joined
+
+
+def verify_report(source, day):
+    m = report_module()
+    m.epoch(day)
+    report = json.loads(source.read('reports/'+day+'.json'))
+    m.validate_report(report,source.index,source.status)
+    history = {}; previous = GENESIS
+    for d,record in source.index.items():
+        if d>day:
+            break
+        if record['prev'] != previous:
+            raise ValueError('Broken report chain boundary')
+        previous = record['head']
+        daily = json.loads(source.read('reports/'+d+'.json'))
+        m.compare(daily['alert_policy'],report['alert_policy'],'historical alert policy')
+        history[d] = report_rows(source,d,daily,m)
+    m.compare(report['periods'],m.periods(history,day,report['alert_policy']['threshold']),'periods')
+    if source.read('reports/'+day+'.md') != m.markdown(report):
+        raise ValueError('Markdown summary mismatch')
+    print('PASS: %s daily, seven-day and since-launch metrics match all committed predictions and published labels. Market labels and actual issuance times are not independently verified.' % day)
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dir', help='local public repository clone')
@@ -355,10 +439,14 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('chain').add_argument('--since', help='audit from this UTC day onward')
     sub.add_parser('answer').add_argument('file')
+    sub.add_parser('report').add_argument('day')
     m = sub.add_parser('minute'); m.add_argument('minute'); m.add_argument('--mint')
     args = parser.parse_args(argv)
     try:
         source = Source(args.dir, args.base_url, args.reveal_dir)
+        if args.command == 'report':
+            verify_report(source, args.day)
+            return 0
         if args.command == 'chain':
             entries, stamps = source.audit(args.since)
             for head, generated, path in stamps:
@@ -405,6 +493,8 @@ def main(argv=None):
                 entry = source.by_time.get(expected['t'])
                 if entry is None:
                     raise ValueError('Minute is not in the public chain')
+                if entry.get('paused'):
+                    raise ValueError('not committed: storage paused')
                 generated, _ = source.stamp(entry['t'])
                 print('%s: committed at %s; stamped by FreeTSA at %s (+%d s).' %
                       (expected['mint'] or 'Minute', entry['minute'],

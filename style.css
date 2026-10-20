@@ -19,3 +19,9 @@ a { color: light-dark(#174fae, #9bc2ff); }
 .pass { color: light-dark(#126237, #87e4b0); }
 .fail { color: light-dark(#a2142c, #ff9eae); }
 .pending { color: light-dark(#775200, #f7d574); }
+select { font: inherit; max-width: 100%; padding: .35rem; }
+#report svg { display: block; width: 100%; height: auto; max-width: 36rem; }
+#report table { border-collapse: collapse; font-size: .88rem; margin: .7rem 0 1.3rem; }
+#report th, #report td { text-align: left; padding: .45rem .65rem; border-bottom: 1px solid #8290a6; }
+#report th { vertical-align: bottom; }
+#report td { font-variant-numeric: tabular-nums; }

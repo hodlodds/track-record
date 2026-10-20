@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daily accuracy · HodlOdds</title><link rel="stylesheet" href="style.css">
+<script src="report.js" defer></script></head><body><main>
+<h1>Daily accuracy</h1>
+<p><a href="index.html">Verify a commitment</a> · <a href="README.md#daily-accuracy-report">Definitions and recomputation</a></p>
+<p>Only committed, fully revealed days. Odds, not guarantees. Not financial advice.</p>
+<p id="status" role="status">Loading published reports…</p>
+<label>UTC day <select id="day" disabled></select></label>
+<label>Observation unit <select id="sample"><option value="minute">Every committed minute</option><option value="coin_hour">First committed prediction per coin-hour</option></select></label>
+<p>Minute predictions of the same coin are correlated. The coin-hour view reduces repetition; it does not make observations independent. Wilson intervals below are descriptive binomial intervals.</p>
+<div id="report"></div>
+<p>Alert lead times use prediction time as an optimistic proxy: commitments do not contain actual issuance time. Outcomes are operator-supplied. The CLI checks arithmetic and committed predictions; it does not independently verify market bars.</p>
+</main></body></html>

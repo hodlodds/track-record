@@ -15,15 +15,15 @@ export const iso = t => new Date(t * 1000).toISOString().slice(0, 16) + 'Z';
 export function parseChain(text) {
   if (text && !text.endsWith('\n')) throw Error('Incomplete chain line.');
   return text ? text.slice(0, -1).split('\n').map(line => {
-    const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})$/.exec(line);
-    if (!m || m[0] !== line || !Number.isSafeInteger(Number(m[2]))) throw Error('Malformed chain line.');
-    return {minute: m[1], t: minute(m[1]), rows: Number(m[2]), sha256: m[3], chain: m[4], line};
+    const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*|paused) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})$/.exec(line);
+    if (!m || m[0] !== line || (m[2] !== 'paused' && !Number.isSafeInteger(Number(m[2])))) throw Error('Malformed chain line.');
+    return {minute: m[1], t: minute(m[1]), rows: m[2] === 'paused' ? 0 : Number(m[2]), paused: m[2] === 'paused', sha256: m[3], chain: m[4], line};
   }) : [];
 }
 export async function verifyLinks(entries, previous = GENESIS, after = -1) {
   for (const e of entries) {
     if (e.t <= after) throw Error('Chain minutes must strictly increase.');
-    if (await digest(`${previous} ${e.minute} ${e.rows} ${e.sha256}`) !== e.chain) throw Error(`Broken chain link at ${e.minute}.`);
+    if (await digest(`${previous} ${e.minute} ${e.paused ? 'paused' : e.rows} ${e.sha256}`) !== e.chain) throw Error(`Broken chain link at ${e.minute}.`);
     previous = e.chain; after = e.t;
   }
   return previous;
@@ -237,6 +237,7 @@ async function startUI() {
             const generated = stampCache.get(stamp.path);
             statusLine(steps, 'pass', `2. The chain links to a FreeTSA time stamp at ${new Date(generated * 1000).toISOString()} (+${generated - request.t} s). Its signature and certificate chain check out in this browser.`);
           }
+          if (entry.paused) throw Error('not committed: storage paused');
           const due = revealDue(request.t, status.delay_hours);
           const advertised = Boolean(status.revealed_through) && request.t <= minute(status.revealed_through);
           const pending = () => statusLine(steps, 'pending', `3. Not yet revealed. Scheduled after ${new Date(due * 1000).toISOString()}; publication runs hourly.`);
