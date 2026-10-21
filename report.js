@@ -90,6 +90,10 @@ async function start() {
     if(!days.length) { $('status').textContent='No fully revealed daily reports yet.'; return; }
     days.forEach(d=>{const o=node('option',d,$('day'));o.value=d;});
     $('day').disabled=false; $('day').addEventListener('change',show);$('sample').addEventListener('change',show);await show();
-  } catch(e) { $('status').textContent=`No report available: ${e.message}`; }
+  } catch(e) {
+    // r100 (Fable audit 20): before the first report, say so plainly instead of showing a fetch error
+    $('status').textContent = /\(404\)$/.test(e.message) ? 'No accuracy report has been published yet.'
+      : `No report available: ${e.message}`;
+  }
 }
 start();

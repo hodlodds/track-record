@@ -21,6 +21,15 @@ import urllib.request
 
 RAW = 'https://raw.githubusercontent.com/hodlodds/track-record/main/'
 GENESIS = '0' * 64
+# r100 (Fable audit 20): an empty commitment (rows=0) means nothing was published for that minute, not that
+# this mint was left out of a published minute.
+EMPTY_MINUTE = "No predictions were published for this minute (an empty commitment, for example during a feed pause). Check the answer's as_of minute."
+
+
+def absent_message(entry):
+    return EMPTY_MINUTE if entry['rows'] == 0 and not entry.get('paused') else 'Mint is absent from the verified minute'
+
+
 LINE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*|paused) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})')
 REVEAL_GRACE_S = 7200  # a due hour may still be waiting for the hourly publication run
 DOWNGRADE = {'high': 'medium', 'medium': 'low', 'low': 'low', 'experimental': 'experimental'}
@@ -510,7 +519,7 @@ def main(argv=None):
                 else:
                     selected = [r for r in rows if not expected['mint'] or r['mint'] == expected['mint']]
                     if expected['mint'] and not selected:
-                        raise ValueError('Mint is absent from the verified minute')
+                        raise ValueError(absent_message(entry))
                     for row in selected:
                         print(row['line'])
             except Exception as exc:

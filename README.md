@@ -199,7 +199,8 @@ missing label is never replaced by a later prediction. Both samples remain
 correlated; Wilson intervals are descriptive binomial intervals, not independent
 coin or temporal confidence intervals. Empty/undefined statistics are JSON `null`.
 
-The daily report job runs daily at **01:40 UTC**, after the hourly reveal publisher at :35.
+No accuracy report has been published yet. When enabled, the daily report job runs at **01:40 UTC**,
+after the hourly reveal publisher at :35.
 It catches up every completed, fully revealed day. With the normal 24-hour reveal
 delay, day D is fully revealed around **D+2 00:35 UTC**, and its report normally
 arrives after the D+2 01:40 computation and the next :35 publisher run. A longer

@@ -112,6 +112,11 @@ export function canonicalLines(text) {
 }
 // Canonical identifiers are ASCII; compare code points, never locale-dependent collation.
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+// r100 (Fable audit 20): an empty commitment (rows=0) means nothing was published for that minute.
+export const EMPTY_MINUTE = "No predictions were published for this minute (an empty commitment, for example during a feed pause). Check the answer's as_of minute.";
+export function absentMessage(entry) {
+  return entry.rows === 0 && !entry.paused ? EMPTY_MINUTE : 'This mint is absent from the verified minute.';
+}
 export function blockFor(rows, t) {
   const selected = rows.filter(r => r.t === t).sort((a, b) => compare(a.mint, b.mint) || compare(a.kind, b.kind));
   return {rows: selected, body: selected.map(r => r.line + '\n').join('')};
@@ -260,7 +265,7 @@ async function startUI() {
           }
           const rows = blockCache.get(request.t);
           const found = rows.filter(r => r.mint === request.mint);
-          if (!found.length) throw Error('This mint is absent from the verified minute.');
+          if (!found.length) throw Error(absentMessage(entry));
           if (raw && !found.some(r => matches(r, request))) throw Error('The prediction number or confidence level does not match your answer.');
           statusLine(steps, 'pass', raw ? '3. The revealed file matches the committed fingerprint and your exact number and confidence level.' + (request.stale ? ' Confidence lowered for a stale last-known answer, as documented.' : '') : `3. The revealed file matches the committed fingerprint. ${found.map(r => `${r.kind}: ${r.p || '(no score)'}, confidence ${r.level || '(none)'}`).join('; ')}.`);
         } catch (error) { statusLine(steps, 'fail', error.message); }
