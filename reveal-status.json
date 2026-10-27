@@ -1,6 +1,6 @@
 {
   "schema": "hodlodds.reveal.v1",
-  "revealed_through": "2026-10-26T05:59Z",
+  "revealed_through": "2026-10-26T06:59Z",
   "delay_hours": 24.0,
   "url": "https://api.hodlodds.com/track/reveal/"
 }
