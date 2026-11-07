@@ -9,7 +9,7 @@ are revealed later so the evidence can be independently checked.
 
 ## What a score means
 
-0.04 means about 4 in 100 tokens like this one lose 90% or more of their price within the next 60 minutes. Higher means riskier, but a low number does not mean safe: smaller or slower drops are not counted, and the odds change minute by minute.
+0.04 means about 4 in 100 tokens like this one lose 90% or more of their price within the next 60 minutes. Higher means riskier. A low number is not a safety signal: smaller or slower drops are not counted, and the odds change minute by minute.
 
 For covered SOL tokens, the 60-minute window starts at `as_of`. Scores update each minute; a saved answer is historical evidence, not current odds. Confidence is an evidence label, not a token-specific interval. Experimental non-SOL scores are not validated probabilities. The exact close-based definition appears below.
 
@@ -20,7 +20,7 @@ For covered SOL tokens, the 60-minute window starts at `as_of`. Scores update ea
    signature checks run locally. The page downloads public evidence and exact
    pinned PKI.js 3.2.5 / ASN.1.js 3.0.6 modules from jsDelivr; it never uploads your
    answer. A modern HTTPS browser with Web Crypto and `DecompressionStream` is
-   required. Pass, fail and pending are shown separately for each step.
+   required. Pass, fail, pending and late are shown separately for each step.
 2. **Command line:** download `verify.py` from this repository, inspect it, and run:
 
    ```sh
@@ -40,16 +40,29 @@ For covered SOL tokens, the 60-minute window starts at `as_of`. Scores update ea
    indexes with actual clone files. For a fully offline check, provide
    `--reveal-dir` as well. Global flags go before the subcommand; `--since` goes
    after `chain`.
-   `answer` exits 0 when every available check passes, including a still-pending
-   reveal before its due time. It fails if the chain, signature, number, level or
-   reveal fingerprint differs; if a covering stamp is absent; or if a due reveal
-   is missing. It prints a verdict per row, without rounding or float tolerance.
+   `answer` and `minute` exit 0 only when every check passes. They exit 1 if the
+   chain, signature, number, level or reveal fingerprint differs, if no stamp
+   covers a minute more than 7,800 seconds old, or if a due reveal is missing; 4
+   if a minute is LATE; 3 if something is still pending (a reveal before its due
+   time, or a stamp not published yet). The most serious one wins: 1, then 4,
+   then 3. A minute is LATE when its first covering stamp came more than 600
+   seconds after it: the chain head is stamped every 5 minutes, so that stamp
+   does not show the minute was committed before what happened in between was
+   known. The hourly publication copies the chain to its newest minute but only
+   the stamps made by then, so the newest few minutes get their stamp one run
+   later: a missing stamp is pending for 600 seconds plus two hours (7,800
+   seconds), and the stamp is still judged by its own time when it comes. The
+   other checks still run and print their verdicts. It prints a
+   verdict per row, without rounding or float tolerance.
    `chain` audits every day from genesis and every indexed token; `chain --since
    YYYY-MM-DD` audits from that day's indexed `prev` onward for cheap periodic
    checks. With `--dir`, each audited token index must list exactly the tokens
    and corresponding texts present. It reports uncovered tail minutes and
-   worst/median delays to the first covering stamp. It lists Bitcoin proofs and
-   runs `ots verify` when installed (that optional check may require a network).
+   worst/median delays to the first covering stamp, and lists every stretch of
+   LATE minutes (first covered more than 600 seconds after the minute, or not
+   covered 7,800 seconds after it in the files read); it exits 4 when there is
+   one, and 1 on any failure. It lists Bitcoin proofs and runs `ots verify` when
+   installed (that optional check may require a network).
 3. **Manual, independent tools:** obtain the public files and retain a copy:
 
    ```sh
@@ -106,6 +119,7 @@ is changed by publication.
 * `ots/<day>.chain` is that day's chain text, with `.chain.ots` its detached
   OpenTimestamps proof. Proofs may be upgraded in place; the input never changes.
 * Reveal file: `https://api.hodlodds.com/track/reveal/<day>/<HH>.tsv.gz`.
+  `https://api.hodlodds.com/track/reveal/` lists the revealed files by day.
   The uncompressed canonical lines are sorted by **`(mint, kind, t)`** across
   the hour. Gzip level 9, mtime 0, no filename. Re-sort each selected minute by
   `(mint, kind)` before hashing, and compare both row count and block SHA-256.

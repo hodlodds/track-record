@@ -32,12 +32,52 @@ def absent_message(entry):
 
 LINE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) rows=(0|[1-9]\d*|paused) sha256=([a-f0-9]{64}) chain=([a-f0-9]{64})')
 REVEAL_GRACE_S = 7200  # a due hour may still be waiting for the hourly publication run
+# The chain head is stamped every 5 minutes, so the first stamp covering a minute normally comes within about 6
+# minutes of it. A minute whose first covering stamp came later than this is LATE: the stamp does not show it was
+# committed before what happened in between was known.
+MAX_STAMP_DELAY_S = 600
+# The hourly publication copies the chain to its last minute but only the stamps made by then, so the newest minutes
+# wait for the next run to carry their stamps. A minute with no published stamp is pending until this long after its
+# stamp was due, and LATE after that. A stamp that is published later is still judged by its own time, never by when
+# it was published.
+STAMP_GRACE_S = REVEAL_GRACE_S
+# Exit codes: 0 every check passed; 1 a check failed; 3 something is still pending (a reveal or stamp not yet due);
+# 4 a minute is LATE. The most serious one wins: 1, then 4, then 3.
+EXIT_FAIL, EXIT_PENDING, EXIT_LATE = 1, 3, 4
 DOWNGRADE = {'high': 'medium', 'medium': 'low', 'low': 'low', 'experimental': 'experimental'}
 INDEX = re.compile(r'(\d{4}-\d{2}-\d{2}) first=(\S+) last=(\S+) lines=([1-9]\d*) prev=([a-f0-9]{64}) head=([a-f0-9]{64})')
 
 
 def iso(t):
     return time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(t))
+
+
+class NoStamp(ValueError):
+    """No published stamp covers the minute yet."""
+
+
+def stamp_verdict(t, generated, now):
+    """'pass', 'late' or 'pending' for minute t whose first covering stamp is `generated` (None: none yet)."""
+    if generated is None:
+        return 'late' if now - t > MAX_STAMP_DELAY_S + STAMP_GRACE_S else 'pending'
+    return 'late' if generated - t > MAX_STAMP_DELAY_S else 'pass'
+
+
+def exit_code(failed, late, pending):
+    return EXIT_FAIL if failed else EXIT_LATE if late else EXIT_PENDING if pending else 0
+
+
+def late_stretches(minutes):
+    """[(t, delay)] oldest first -> [(first t, last t, count, worst delay)]: consecutive minutes of one kind joined,
+    those stamped late (delay in seconds) or those with no covering stamp (delay None)."""
+    out = []
+    for t, delay in minutes:
+        if out and t - out[-1][1] <= 60 and (delay is None) == (out[-1][3] is None):
+            first, _, n, worst = out[-1]
+            out[-1] = (first, t, n + 1, None if delay is None else max(worst, delay))
+        else:
+            out.append((t, t, 1, delay))
+    return out
 
 
 def minute(text):
@@ -276,7 +316,7 @@ class Source:
                             raise ValueError('Broken chain across day boundary')
                         previous = self.index[d]['head']
                 return covering
-        raise ValueError('No covering stamp yet (looked at most 2 days ahead)')
+        raise NoStamp('No covering stamp yet (looked at most 2 days ahead)')
 
     def audit(self, since=None):
         if since is not None and since not in self.index:
@@ -441,7 +481,10 @@ def verify_report(source, day):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=(
+        'Exit codes: 0 every check passed; 1 a check failed; 3 pending (a reveal or stamp not yet due); 4 LATE (a '
+        'minute first stamped more than %d s after it). The most serious one wins: 1, then 4, then 3.'
+        % MAX_STAMP_DELAY_S))
     parser.add_argument('--dir', help='local public repository clone')
     parser.add_argument('--reveal-dir', help='local revealed files, for offline verification')
     parser.add_argument('--base-url', default=RAW)
@@ -460,16 +503,38 @@ def main(argv=None):
             entries, stamps = source.audit(args.since)
             for head, generated, path in stamps:
                 print('%s: FreeTSA genTime %s' % (path, time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(generated))))
-            delays, cursor = [], 0
+            delays, late, tail, cursor = [], [], [], 0
+            now = time.time()
             for entry in entries:
                 while cursor < len(stamps) and stamps[cursor][0] < entry['t']:
                     cursor += 1
-                if cursor < len(stamps):
-                    delays.append(stamps[cursor][1] - entry['t'])
+                generated = stamps[cursor][1] if cursor < len(stamps) else None
+                if generated is not None:
+                    delays.append(generated - entry['t'])
+                verdict = stamp_verdict(entry['t'], generated, now)
+                if verdict == 'late':
+                    late.append((entry['t'], None if generated is None else generated - entry['t']))
+                elif verdict == 'pending':
+                    tail.append(entry['t'])
             print('Verified %d chain minutes from %s. %d have a covering stamp; %d uncovered tail minutes.' %
                   (len(entries), args.since or 'genesis', len(delays), len(entries) - len(delays)))
             if delays:
                 print('First covering stamp delay: worst %g s; median %g s.' % (max(delays), statistics.median(delays)))
+            stretches = late_stretches(late)
+            for first, last, n, worst in stretches[:50]:
+                print('LATE %s..%s: %d minute%s, %s.' % (
+                    iso(first), iso(last), n, '' if n == 1 else 's',
+                    'no covering stamp in the files read, %d s after' % (MAX_STAMP_DELAY_S + STAMP_GRACE_S)
+                    if worst is None else
+                    'first covering stamp up to +%d s' % worst))
+            if len(stretches) > 50:
+                print('LATE: %d more stretches not listed.' % (len(stretches) - 50))
+            if late:
+                print('LATE: %d minutes have no covering stamp within %d s of the minute: their stamps do not show '
+                      'they were committed before what happened in between was known.' % (len(late), MAX_STAMP_DELAY_S))
+            if tail:
+                print('PENDING: %d newest minutes have no published stamp yet; the hourly publication carries their '
+                      'stamps, which must come within %d s of each minute.' % (len(tail), MAX_STAMP_DELAY_S))
             for day in source.days:
                 path = 'ots/' + day + '.chain.ots'
                 try:
@@ -489,13 +554,13 @@ def main(argv=None):
                         target.write_bytes(expected)
                         Path(str(target) + '.ots').write_bytes(proof)
                         subprocess.run(['ots', 'verify', str(target) + '.ots'], check=True, timeout=120)
-            return 0
+            return EXIT_LATE if late else 0
         if args.command == 'answer':
             raw = sys.stdin.read() if args.file == '-' else Path(args.file).read_text()
             requests = parse_answer(json.loads(raw))
         else:
             requests = [dict(t=minute(args.minute), mint=args.mint)]
-        failed = False
+        failed = late = pending = False
         for expected in requests:
             try:
                 source.day(iso(expected['t'])[:10])
@@ -504,13 +569,32 @@ def main(argv=None):
                     raise ValueError('Minute is not in the public chain')
                 if entry.get('paused'):
                     raise ValueError('not committed: storage paused')
-                generated, _ = source.stamp(entry['t'])
-                print('%s: committed at %s; stamped by FreeTSA at %s (+%d s).' %
-                      (expected['mint'] or 'Minute', entry['minute'],
-                       time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(generated)), generated - entry['t']))
+                try:
+                    generated, _ = source.stamp(entry['t'])
+                except NoStamp:
+                    generated = None
+                verdict = stamp_verdict(entry['t'], generated, time.time())
+                if generated is None and verdict == 'late':
+                    raise ValueError('No time stamp covers this minute, though it is more than %d s old' %
+                                     (MAX_STAMP_DELAY_S + STAMP_GRACE_S))
+                if generated is None:
+                    print('PENDING: %s: committed at %s; no published stamp yet. The hourly publication carries it, '
+                          'and it must come within %d s of the minute.' %
+                          (expected['mint'] or 'Minute', entry['minute'], MAX_STAMP_DELAY_S))
+                    pending = True
+                else:
+                    print('%s: committed at %s; stamped by FreeTSA at %s (+%d s).' %
+                          (expected['mint'] or 'Minute', entry['minute'],
+                           time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(generated)), generated - entry['t']))
+                if verdict == 'late':
+                    print('LATE: the first stamp covering this minute came %d s after it, more than %d s: it does not '
+                          'show the minute was committed before what happened in between was known.' %
+                          (generated - entry['t'], MAX_STAMP_DELAY_S))
+                    late = True
                 rows, due = source.revealed(entry)
                 if rows is None:
                     print('PENDING: not yet revealed; scheduled after %s.' % time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(due)))
+                    pending = True
                 elif args.command == 'answer':
                     if not any(matches(row, expected) for row in rows):
                         raise ValueError('Revealed prediction number or confidence level does not match the answer')
@@ -525,7 +609,7 @@ def main(argv=None):
             except Exception as exc:
                 print('FAIL %s: %s' % (expected.get('mint') or 'Minute', exc), file=sys.stderr)
                 failed = True
-        return int(failed)
+        return exit_code(failed, late, pending)
     except Exception as exc:
         print('FAIL: ' + str(exc), file=sys.stderr)
         return 1

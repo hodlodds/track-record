@@ -94,6 +94,17 @@ export class Evidence {
   }
 }
 export const REVEAL_GRACE_S = 7200; // a due hour may still be waiting for the hourly publication run
+// The chain head is stamped every 5 minutes, so the first stamp covering a minute normally comes within about 6
+// minutes of it. A minute first stamped later than this is LATE: the stamp does not show it was committed before what
+// happened in between was known (verify.py MAX_STAMP_DELAY_S).
+export const MAX_STAMP_DELAY_S = 600;
+// The hourly publication carries the newest minutes' stamps one run later: a minute with no published stamp is
+// pending until this long after its stamp was due (verify.py STAMP_GRACE_S). A stamp is still judged by its own time.
+export const STAMP_GRACE_S = REVEAL_GRACE_S;
+export function stampVerdict(t, generated, now) {
+  if (generated === null || generated === undefined) return now - t > MAX_STAMP_DELAY_S + STAMP_GRACE_S ? 'late' : 'pending';
+  return generated - t > MAX_STAMP_DELAY_S ? 'late' : 'pass';
+}
 export const DOWNGRADE = {high: 'medium', medium: 'low', low: 'low', experimental: 'experimental'};
 export function canonicalLines(text) {
   if (text && !text.endsWith('\n')) throw Error('Incomplete canonical line.');
@@ -229,8 +240,11 @@ async function startUI() {
           if (!entry) throw Error('This minute is not in the public chain.');
           statusLine(steps, 'pass', '1. This minute is in the public chain; the requested day matches its index and its links check out.');
           const stamp = await evidence.covering(request.t);
-          if (!stamp) { statusLine(steps, 'pending', '2. No covering stamp yet (looked at most 2 days ahead).'); }
-          else {
+          if (!stamp) {
+            // a missing stamp is pending only while one is still due
+            if (stampVerdict(request.t, null, Date.now() / 1000) === 'late') throw Error(`2. No time stamp covers this minute, though it is more than ${MAX_STAMP_DELAY_S + STAMP_GRACE_S} s old (looked at most 2 days ahead).`);
+            statusLine(steps, 'pending', `2. No published stamp yet; the hourly publication carries it, and it must come within ${MAX_STAMP_DELAY_S} s of the minute.`);
+          } else {
             const txt = await get('./' + stamp.path.replace(/\.tsr$/, '.txt'));
             checkStampText(decoder.decode(txt), evidence.byTime.get(stamp.t));
             if (!stampCache.has(stamp.path)) {
@@ -240,7 +254,9 @@ async function startUI() {
               stampCache.set(stamp.path, generated);
             }
             const generated = stampCache.get(stamp.path);
-            statusLine(steps, 'pass', `2. The chain links to a FreeTSA time stamp at ${new Date(generated * 1000).toISOString()} (+${generated - request.t} s). Its signature and certificate chain check out in this browser.`);
+            const stamped = `2. The chain links to a FreeTSA time stamp at ${new Date(generated * 1000).toISOString()} (+${generated - request.t} s). Its signature and certificate chain check out in this browser.`;
+            if (stampVerdict(request.t, generated, Date.now() / 1000) === 'late') statusLine(steps, 'late', `${stamped} It came more than ${MAX_STAMP_DELAY_S} s after the minute, so it does not show the minute was committed before what happened in between was known.`);
+            else statusLine(steps, 'pass', stamped);
           }
           if (entry.paused) throw Error('not committed: storage paused');
           const due = revealDue(request.t, status.delay_hours);
