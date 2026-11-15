@@ -8,7 +8,8 @@ numbers.
 |---|---|---|---|---|---|
 | `crashrisk-bf-frozen-1` (BF) | `c158d70e676b5733` | 2026-10-01 00:00 | t from 2026-10-01, t+60m ≤ 2026-10-15 00:00 | until 2026-11-02 22:41 | `PREREG.md`, Part 1 |
 | `crashrisk-bf-2` | `fe55f0d05dc76452` | 2026-10-18 00:00 | t from 2026-10-18, t+60m ≤ 2026-11-01 00:00 | 2026-11-02 22:41 to 2026-11-08 09:18 | `PREREG_AMENDMENT_2_2026-11-02.md` |
-| `crashrisk-bf-frozen-1` (BF) | `c158d70e676b5733` | 2026-10-01 00:00 | t from 2026-10-01, t+60m ≤ 2026-10-15 00:00 | from 2026-11-08 09:18 | `PREREG_AMENDMENT_3_2026-11-03.md`, week with origin 2026-11-07: its candidate did not pass |
+| `crashrisk-bf-frozen-1` (BF) | `c158d70e676b5733` | 2026-10-01 00:00 | t from 2026-10-01, t+60m ≤ 2026-10-15 00:00 | 2026-11-08 09:18 to 2026-11-15 12:56 | `PREREG_AMENDMENT_3_2026-11-03.md`, week with origin 2026-11-07: its candidate did not pass |
+| `crashrisk-bf-4` | `4204a64477c8d06c` | 2026-10-31 00:00 | t from 2026-10-31, t+60m ≤ 2026-11-14 00:00 | from 2026-11-15 12:56 | `PREREG_AMENDMENT_3_2026-11-03.md`, week with origin 2026-11-14 |
 
 Weekly refits under `PREREG_AMENDMENT_3_2026-11-03.md` take the next number each week: `crashrisk-bf-3` for the
 week with origin 2026-11-07, `crashrisk-bf-4` for the next. A candidate that fails its gate is not served and gets
