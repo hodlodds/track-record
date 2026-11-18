@@ -185,7 +185,9 @@ previously witnessed evidence. They do **not** prove that all predictions were
 submitted in the first place, that an answer was sold at its claimed time, that
 the first commitment was immediate, or that a model is accurate or profitable.
 A late timestamp gives a correspondingly weaker timing claim; the verifier
-reports its actual delay. The separate track-record report measures accuracy.
+reports its actual delay. How odds matched outcomes is measured separately: the forward test's
+reports (below) measure the frozen model BF on the same live inputs (which model served when:
+prereg/SERVED_MODELS.md), and the daily accuracy report, once it is published, scores the predictions served.
 
 FreeTSA's clock and signing key are trusted for RFC 3161 time. Published
 certificates must themselves be obtained from a trusted source; downloading a
@@ -203,9 +205,37 @@ never existed. Retain independent copies, compare heads/history, and validate
 Bitcoin proofs. The browser page and CDN code also require trust; inspect or
 archive the code and use the independent CLI/manual checks when appropriate.
 
+## Forward test: pre-registration and reports
+
+The forecast model's forward test was pre-registered. Its files:
+
+* [prereg/PREREG.md](prereg/PREREG.md): the public copy of the pre-registration (frozen 2026-10-16 19:25 UTC) and of
+  its Amendment 1 (2026-10-17, before any forward outcome was inspected), time-stamped before the outcomes were
+  unsealed: [prereg/MANIFEST.sha256](prereg/MANIFEST.sha256), with its FreeTSA token (`MANIFEST.tsr`) and its
+  OpenTimestamps proof (`MANIFEST.sha256.ots`). Part 1's schedule ("2026-11-15: the binding report") is kept as it
+  was frozen: Amendment 1, in Part 2, moved the binding decision to October 20, and Amendment 2 made the November 15
+  report descriptive.
+* [Amendment 2](prereg/PREREG_AMENDMENT_2_2026-11-02.md) (2026-11-02): a refit of the model makes the odds, and the
+  November 15 report becomes descriptive. [Amendment 3](prereg/PREREG_AMENDMENT_3_2026-11-03.md) (2026-11-03): the
+  model is refit every week under the same gate.
+* [prereg/SERVED_MODELS.md](prereg/SERVED_MODELS.md): which model made the odds when, with each model file's
+  fingerprint.
+* [prereg/MODEL_CARD_TEMPLATE.md](prereg/MODEL_CARD_TEMPLATE.md): the unfilled model-card template time-stamped with
+  the pre-registration, not a filled model card.
+
+The reports:
+
+* [results/RESULTS_2026-10-20.md](results/RESULTS_2026-10-20.md): the pre-registered decision over about three days:
+  passed, model BF selected.
+* [results/RESULTS_2026-10-30.md](results/RESULTS_2026-10-30.md): the follow-up look, 13 days, descriptive.
+* [results/RESULTS_2026-11-15.md](results/RESULTS_2026-11-15.md): the last look the pre-registration schedules, 29
+  days, descriptive. It was computed at 10:07 UTC that day; the weekly refit `crashrisk-bf-4` began serving at
+  12:56 UTC (see SERVED_MODELS.md).
+
 ## Daily accuracy report
 
-Open [Daily accuracy](report.html) for the latest fully revealed UTC day, seven-day
+Once it is published, [Daily accuracy](report.html) shows the latest fully
+revealed UTC day, seven-day
 calibration charts, headline scores, alert precision/recall, and the most confident
 misses in both directions. Switch between every committed minute and the **first
 committed prediction per coin per UTC hour**. Selection precedes censoring; a
@@ -213,7 +243,8 @@ missing label is never replaced by a later prediction. Both samples remain
 correlated; Wilson intervals are descriptive binomial intervals, not independent
 coin or temporal confidence intervals. Empty/undefined statistics are JSON `null`.
 
-No accuracy report has been published yet. When enabled, the daily report job runs at **01:40 UTC**,
+The daily accuracy report is not published yet: until it is, this repository has no `reports/` folder and
+`verify.py report` (below) has nothing to check. When enabled, the daily report job runs at **01:40 UTC**,
 after the hourly reveal publisher at :35.
 It catches up every completed, fully revealed day. With the normal 24-hour reveal
 delay, day D is fully revealed around **D+2 00:35 UTC**, and its report normally
@@ -225,8 +256,9 @@ The mirror must also contain the chain through that minute or beyond.
 
 Only `sol` rows that rehash to their minute commitment enter the main metrics.
 `nonsol_exp` rows are counted separately and never assigned outcomes. Missing or
-invalid probabilities are dropped explicitly. The evaluator calls the same
-`air/r1020_forward.py:label_day` used by the prospective evaluation:
+invalid probabilities are dropped explicitly. The evaluator calls the same labelling function
+(`label_day`, in the operator's code, not in this repository) used by the prospective evaluation; its
+rules:
 
 * Reference: last native completed bar in `[t−300,t−60]`, with finite positive
   close and SOL reserves. A crash is a close **≤10% of that reference** in

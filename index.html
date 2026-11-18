@@ -10,7 +10,7 @@
   <script type="module" src="verify.js"></script>
 </head>
 <body><main>
-  <p><a href="https://hodlodds.com">hodlodds.com</a> · <a href="report.html">Accuracy report</a> (not published yet)</p>
+  <p><a href="https://hodlodds.com">hodlodds.com</a> · <a href="report.html">Daily accuracy</a> (not published yet) · <a href="https://github.com/hodlodds/track-record/tree/main/results">Forward-test reports</a></p>
   <h1>HodlOdds track record — verify a prediction</h1>
   <p>Check that the prediction you bought matches the one recorded before its outcome was known.</p>
   <form>
@@ -27,7 +27,7 @@
   <div id="results" role="status" aria-live="polite" aria-atomic="false"></div>
   <h2>How this works</h2>
   <p>Every minute, all stored predictions are reduced to a fingerprint. Each fingerprint links to the previous one. FreeTSA signs a time stamp covering the chain, usually every five minutes. After an hour ends, its predictions wait 24 hours before publication. Your browser checks the chain, the signature, and then the revealed prediction.</p>
-  <p>For the minutes covered by published evidence, this detects predictions changed or cherry-picked after the fact. It cannot prove that every prediction was submitted before commitment, that a purchase was honestly issued, or that the whole public history was never hidden. Keep your answer and independent copies of the public history. Accuracy is shown by the separate track-record report; these checks do not measure it.</p>
+  <p>For the minutes covered by published evidence, this detects predictions changed or cherry-picked after the fact. It cannot prove that every prediction was submitted before commitment, that a purchase was honestly issued, or that the whole public history was never hidden. Keep your answer and independent copies of the public history. These checks do not measure accuracy. The forward-test reports in <a href="https://github.com/hodlodds/track-record/tree/main/results">results/</a> measure the frozen model BF on the same live inputs; which model served the odds when is in <a href="https://github.com/hodlodds/track-record/blob/main/prereg/SERVED_MODELS.md">prereg/SERVED_MODELS.md</a>.</p>
   <p>Trust rests on FreeTSA's clock and signing key, independently preserved GitHub history, and Bitcoin anchors via OpenTimestamps. This page and its downloaded libraries must also be trustworthy; inspect the files or use the independent command-line verifier.</p>
   <p><a href="verify.py" download>Download verify.py</a> · <a href="README.md">Formats and manual verification</a> · <a href="chain/index.txt">Raw file index</a> · <a href="https://github.com/hodlodds/track-record">Public repository and history</a> · <a href="https://opentimestamps.org">Verify Bitcoin proofs</a></p>
   <p>Run <code>python3 verify.py answer my_answer.json</code>. Python 3.9+ and OpenSSL are required.</p>
