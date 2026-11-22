@@ -458,25 +458,57 @@ def report_rows(source, day, report, metrics=None):
     return joined
 
 
-def verify_report(source, day):
+def verify_report(source, day, deep=False, since=None):
+    """Recompute daily reports from their committed rows, published labels and the previous report's carry.
+
+    Default: the report of `day` only (24 reveal and 24 label files), with the carry of the previous report it
+    names, whose bytes must hash to its `previous.sha256`; that carry is relied on, not recomputed. --deep: every
+    indexed day from `since` (default: the first) through `day` in order, each from the carry the run recomputed
+    for the day before (or, at `since`, the carry of the report before it), clearing the caches after each day."""
     m = report_module()
     m.epoch(day)
-    report = json.loads(source.read('reports/'+day+'.json'))
-    m.validate_report(report,source.index,source.status)
-    history = {}; previous = GENESIS
-    for d,record in source.index.items():
-        if d>day:
-            break
-        if record['prev'] != previous:
+    days = [d for d in source.index if d <= day]
+    if day not in source.index:
+        raise ValueError('Report day is absent from chain')
+    start = (since or days[0]) if deep else day
+    m.epoch(start)
+    if start not in days:
+        raise ValueError('--since must be an indexed day no later than the report day')
+    carry, policy, previous = None, None, None   # previous: (day, sha256) of the report before the one checked
+    position = days.index(start)
+    if position:
+        raw = source.read('reports/'+days[position-1]+'.json')
+        before = json.loads(raw)
+        m.validate_report(before,source.index,source.status)
+        carry, policy, previous = before['carry'], before['alert_policy'], (days[position-1], sha(raw))
+    relied, report = previous, None
+    for i, d in enumerate(days[position:], position):
+        if source.index[d]['prev'] != (source.index[days[i-1]]['head'] if i else GENESIS):
             raise ValueError('Broken report chain boundary')
-        previous = record['head']
-        daily = json.loads(source.read('reports/'+d+'.json'))
-        m.compare(daily['alert_policy'],report['alert_policy'],'historical alert policy')
-        history[d] = report_rows(source,d,daily,m)
-    m.compare(report['periods'],m.periods(history,day,report['alert_policy']['threshold']),'periods')
-    if source.read('reports/'+day+'.md') != m.markdown(report):
-        raise ValueError('Markdown summary mismatch')
-    print('PASS: %s daily, seven-day and since-launch metrics match all committed predictions and published labels. Market labels and actual issuance times are not independently verified.' % day)
+        raw = source.read('reports/'+d+'.json')
+        report = json.loads(raw)
+        m.validate_report(report,source.index,source.status)
+        if report['day'] != d:
+            raise ValueError('Report filename/day mismatch')
+        if policy is not None:
+            m.compare(report['alert_policy'],policy,'historical alert policy')
+        m.compare(report['previous'],None if previous is None else {'day': previous[0], 'sha256': previous[1]},
+                  'previous report link')
+        carry = m.check_day(report,report_rows(source,d,report,m),carry)
+        if source.read('reports/'+d+'.md') != m.markdown(report):
+            raise ValueError('Markdown summary mismatch: '+d)
+        policy, previous = report['alert_policy'], (d, sha(raw))
+        source.cache.clear(); source.days.clear(); source.by_time.clear(); source.blocks.clear()
+    if deep:
+        print('PASS: %s daily metrics, partials and carry match the committed predictions and published labels of '
+              'every day from %s.' % (day, start))
+    else:
+        print('PASS: %s daily metrics, partials and carry match that day\'s committed predictions and published labels. '
+              'Earlier days are checked by `verify.py chain` and `report --deep`.' % day)
+    if relied is not None:
+        print('Relied on: the carry of report %s (sha256 %s), not recomputed in this run; use --deep%s to recompute it.'
+              % (relied[0], relied[1], '' if not deep else ' without --since'))
+    print('Market labels and actual issuance times are not independently verified.')
     return report
 
 
@@ -491,13 +523,18 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('chain').add_argument('--since', help='audit from this UTC day onward')
     sub.add_parser('answer').add_argument('file')
-    sub.add_parser('report').add_argument('day')
+    r = sub.add_parser('report')
+    r.add_argument('day')
+    r.add_argument('--deep', action='store_true', help='recompute every day from the first (or --since), in order')
+    r.add_argument('--since', help='with --deep: start at this indexed day, relying on the carry of the day before')
     m = sub.add_parser('minute'); m.add_argument('minute'); m.add_argument('--mint')
     args = parser.parse_args(argv)
     try:
         source = Source(args.dir, args.base_url, args.reveal_dir)
         if args.command == 'report':
-            verify_report(source, args.day)
+            if args.since and not args.deep:
+                raise ValueError('--since needs --deep')
+            verify_report(source, args.day, args.deep, args.since)
             return 0
         if args.command == 'chain':
             entries, stamps = source.audit(args.since)

@@ -250,22 +250,21 @@ The reports:
 
 ## Daily accuracy report
 
-Once it is published, [Daily accuracy](report.html) shows the latest fully
-revealed UTC day, seven-day
-calibration charts, headline scores, alert precision/recall, and the most confident
-misses in both directions. Switch between every committed minute and the **first
+Once it is published, [Daily accuracy](report.html) shows each fully
+revealed UTC day: a calibration chart, headline scores, alert precision/recall,
+and the most confident misses in both directions. Switch between every committed minute and the **first
 committed prediction per coin per UTC hour**. Selection precedes censoring; a
 missing label is never replaced by a later prediction. Both samples remain
 correlated; Wilson intervals are descriptive binomial intervals, not independent
 coin or temporal confidence intervals. Empty/undefined statistics are JSON `null`.
 
-The daily accuracy report is not published yet: until it is, this repository has no `reports/` folder and
-`verify.py report` (below) has nothing to check. When enabled, the daily report job runs at **01:40 UTC**,
-after the hourly reveal publisher at :35.
-It catches up every completed, fully revealed day. With the normal 24-hour reveal
-delay, day D is fully revealed around **D+2 00:35 UTC**, and its report normally
-arrives after the D+2 01:40 computation and the next :35 publisher run. A longer
-prelaunch delay postpones this further. No outcome computation is allowed before
+Daily accuracy reports appear in `reports/` as days become fully revealed; until the first one is published
+there is no `reports/` folder and `verify.py report` (below) has nothing to check. The report job runs daily at
+**06:20 UTC** and builds completed, fully revealed days, oldest first; the hourly publisher (:35) checks and
+publishes new reports (one per run in this deployment). With the normal 24-hour reveal delay, day D is fully revealed around
+**D+2 00:35 UTC**, and its report normally arrives at the first :35 publisher run after the D+2 06:20
+computation. Days before publication started (from 18 October 2026) are built the same way, from the stored
+market bars of those days. A longer prelaunch delay postpones this further. No outcome computation is allowed before
 **2026-10-20T01:00:00Z**. Even after that boundary, neither elapsed time nor an
 available private archive is sufficient: `revealed_through` must reach D 23:59.
 The mirror must also contain the chain through that minute or beyond.
@@ -283,8 +282,9 @@ rules:
 * All 60 market-wide native bar minutes must be present. Sparse token trading
   alone is not an outage. Invalid horizons and unavailable references are
   dropped, never silently labelled negative. Native-universe filtering is
-  unchanged. Market-wide coverage cannot detect selective feed losses or
-  retroactive registry changes.
+  unchanged: a `sol` row whose mint does not end in `pump` has no native bars
+  and is counted under `outside_label_universe`, never labelled. Market-wide
+  coverage cannot detect selective feed losses or retroactive registry changes.
 * Brier is `mean((p−y)²)`. Skill is `1−Brier/[q(1−q)]`, where `q` is that
   sample's observed crash rate; it is undefined for constant outcomes. Aggregate
   skill uses the aggregate's pooled base rate. Log loss uses natural logs with
@@ -300,26 +300,36 @@ rules:
   against logit(p); degenerate or nonconvergent fits are null.
 * Alerts use the deployed frozen B/BF metadata's **exact** threshold and the
   forward evaluator's 60-minute per-mint cooldown and episode matching. An
-  unlabelled emission still consumes cooldown; selection spans day boundaries
-  before slicing daily/rolling periods. Precision credits only an alert's own
+  unlabelled emission still consumes cooldown. Selection spans day boundaries:
+  a day starts from the alerts the previous day selected in its last hour
+  (`carry.cooldown`), and an episode that crosses after midnight keeps the first
+  alert the previous day gave it (`carry.episodes`), exactly as a computation
+  over the whole history would. Precision credits only an alert's own
   crossing. Recall is measured at ≥5 and ≥15 minutes before the crossing bar
   completes. False episodes/day uses calendar-day exposure. **The commitment
   format lacks `issued_at`**, so prediction time is the explicit issuance proxy
   (as supported by the original selector). Lead times are optimistic; these
   are not measurements of delivered push alerts. The threshold and metadata
-  hash are published and cannot change mid-history in this v1 workflow.
+  hash are published and cannot change mid-history in this workflow.
 * Misses are the ten highest-probability labelled noncrashes and the ten
   lowest-probability crashes, ties by `(t,mint,kind)`. They do not imply a
   binary decision threshold.
 
-`reports/<day>.json` has schema `hodlodds.daily_report.v1`, exact definitions,
+`reports/<day>.json` has schema `hodlodds.daily_report.v2`, exact definitions,
 code revision and file hashes, the chain day's first/last/count/previous/head,
-label hashes and all three periods for both observation units. Rolling periods
-use seven calendar days (or fewer since launch), not seven available reports.
-Since-launch starts at the first indexed commitment day, including the initial
-partial day; calendar exposure includes missing days. Historical labels are
-reused, never re-queried from old bars. Reports and labels are immutable;
-`reports/index.json` is a small day-to-headline map.
+label hashes, and for both observation units: the day's statistics
+(`periods.daily`), its partial sums (`partials`: sums, a fixed public score grid
+of 2,434 cells, crash episodes by minutes of first notice) and the small state the
+next day starts from (`carry`). `previous` names the previous indexed day's report
+and its SHA-256, so the reports form a chain. A day is computed from its own rows
+and labels and the previous report's carry only; historical labels and bars are
+never re-read. Seven-day and since-launch windows can be built from the daily
+files' partials alone (calendar exposure includes missing days; the first indexed
+commitment day starts since-launch, including the initial partial day). On the
+grid, AP and the calibration slope are named `ap_grid` and
+`calibration_slope_grid`; each daily file gives them beside the exact daily AP and
+slope. Reports and labels are immutable; `reports/index.json` is a small
+day-to-headline map.
 
 Labels are at the same free reveal API under
 `<day>/<HH>.labels.tsv.gz`. All 24 hours have files, including empty hours before
@@ -333,22 +343,28 @@ t\tmint\tkind\ty\tfirst_cross_min\tdrop_reason
 Rows are sorted `(mint,kind,t)` and cover every revealed prediction exactly once.
 `y` is 0/1, or empty when dropped; `first_cross_min` is populated only for y=1.
 Reasons are `no_reference_bar`, `no_valid_reference_bar`,
-`uncovered_market_horizon`, `invalid_horizon_bar`, `invalid_probability`, or
-`experimental_excluded`. Non-SOL exclusions do not inflate SOL drop counts.
+`uncovered_market_horizon`, `invalid_horizon_bar`, `invalid_probability`,
+`experimental_excluded`, or `outside_label_universe`. Non-SOL exclusions do not
+inflate SOL drop counts.
 
 Download **both** `verify.py` and [report_metrics.py](report_metrics.py), or clone
 the public repository, then run (Python 3.9+, standard library only):
 
 ```sh
 python3 verify.py report 2026-10-20
-python3 verify.py --dir ./track-record --reveal-dir ./reveal report 2026-10-20
+python3 verify.py report 2026-10-20 --deep
+python3 verify.py --dir ./track-record --reveal-dir ./reveal report 2026-10-20 --deep
 ```
 
-This command verifies every relevant minute block and chain day, joins published
-labels by exact key, checks their hashes, recomputes **every** daily, seven-day
-and since-launch statistic, and compares the JSON and Markdown (exit 1 on any
-mismatch). It reads history through the requested day to reproduce cooldowns and
-aggregates. Floating-point comparisons allow only rounding noise (relative 1e−9,
+By default this command checks one day: it verifies the day's minute blocks and
+chain day, joins its published labels by exact key, checks their hashes, takes the
+`carry` of the previous report (whose bytes must hash to the day's
+`previous.sha256`), recomputes the day's statistics, partials and carry, and
+compares the JSON and Markdown (exit 1 on any mismatch). It prints what it relied
+on: the previous report's carry, which that run does not recompute. `--deep`
+recomputes every day from the first, in order, holding one day at a time;
+`--deep --since DAY` starts at DAY and relies on the carry of the day before.
+Floating-point comparisons allow only rounding noise (relative 1e−9,
 absolute 1e−11); integers/keys are exact. Run `verify.py chain` separately for TSA
 signature and Bitcoin evidence. Recomputing report arithmetic does **not**
 independently establish the truth of operator-supplied market labels. Those can

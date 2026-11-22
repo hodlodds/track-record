@@ -55,16 +55,17 @@ async function show() {
   try {
     const [report,status] = await Promise.all([get(`reports/${day}.json`),get('reveal-status.json')]);
     if (request!==serial) return;
-    if (report.schema!=='hodlodds.daily_report.v1' || report.day!==day || !status.revealed_through || status.revealed_through<`${day}T23:59Z`) throw Error('Report is not a fully revealed day');
+    if (report.schema!=='hodlodds.daily_report.v2' || report.day!==day || !status.revealed_through || status.revealed_through<`${day}T23:59Z`) throw Error('Report is not a fully revealed day');
     const parent = $('report');
     node('h2',`${day} UTC`,parent);
     const links = node('p',null,parent);
     link(links,'JSON',`reports/${day}.json`); node('span',' · ',links);link(links,'Plain English summary',`reports/${day}.md`);
-    node('p',`Recompute: python3 verify.py report ${day} (also download report_metrics.py).`,parent);
+    node('p',`Recompute: python3 verify.py report ${day} (also download report_metrics.py); add --deep to recompute every day from the first.`,parent);
     for (const [name,title] of [['daily','Latest selected day'],['rolling_7d','Seven calendar days'],['since_launch','Since launch']]) {
-      const period=report.periods[name], s=period[sample], section=node('section',null,parent);
+      const period=report.periods[name]; if (!period) continue;
+      const s=period[sample], section=node('section',null,parent);
       node('h2',`${title}: ${period.start} – ${period.end}`,section);
-      table(section,['Committed SOL','Labelled','Dropped','Experimental excluded','Crash rate','Brier','Brier skill','Log loss','AP','AP/prevalence','O/E','Slope'],[[s.n_committed,s.n_labelled,s.n_dropped,s.n_experimental,fmt(s.crash_rate,true),fmt(s.brier),fmt(s.brier_skill),fmt(s.log_loss),fmt(s.ap),fmt(s.ap_over_prevalence),fmt(s.observed_expected),fmt(s.calibration_slope)]]);
+      table(section,['Committed SOL','Labelled','Dropped','of them outside the label universe','Experimental excluded','Crash rate','Brier','Brier skill','Log loss','AP','AP/prevalence','O/E','Slope'],[[s.n_committed,s.n_labelled,s.n_dropped,(s.dropped_by_reason||{}).outside_label_universe||0,s.n_experimental,fmt(s.crash_rate,true),fmt(s.brier),fmt(s.brier_skill),fmt(s.log_loss),fmt(s.ap),fmt(s.ap_over_prevalence),fmt(s.observed_expected),fmt(s.calibration_slope)]]);
       node('p',`Alert precision: ${fmt(s.alerts.precision,true)}; recall ≥5m: ${fmt(s.alerts.recall_ge_5m,true)}; recall ≥15m: ${fmt(s.alerts.recall_ge_15m,true)}. Prediction-time proxy.`,section);
       if (name!=='since_launch') chart(section,s.bands,`${title} calibration`);
     }
