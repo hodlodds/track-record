@@ -7,6 +7,22 @@ Minute fingerprints link together; FreeTSA signs the head about every five
 minutes. Daily OpenTimestamps proofs anchor the chain in Bitcoin. Predictions
 are revealed later so the evidence can be independently checked.
 
+## Quick check
+
+Every minute's fingerprint includes the one before it, so changing any past minute changes every later fingerprint.
+Those fingerprints no longer match the FreeTSA signatures made at the time (about every five minutes), the daily
+Bitcoin proofs, or any earlier copy of this repository. To check it yourself:
+
+```sh
+git clone https://github.com/hodlodds/track-record
+cd track-record
+python3 verify.py --dir . chain --since 2026-11-01
+```
+
+`chain` recomputes the fingerprints from the files, checks each FreeTSA signature with OpenSSL and lists the Bitcoin
+proofs. It exits 0 when every check passes, 4 when it reports LATE minutes and 1 on any failure (details under
+"Three ways to verify"). Without `--since` it audits from the first minute, 2026-10-18 16:49 UTC.
+
 ## What a score means
 
 0.04 means about 4 in 100 tokens like this one lose 90% or more of their price within the next 60 minutes. Higher means riskier. A low number is not a safety signal: smaller or slower drops are not counted, and the odds change minute by minute.
