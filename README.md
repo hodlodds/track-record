@@ -203,7 +203,8 @@ the first commitment was immediate, or that a model is accurate or profitable.
 A late timestamp gives a correspondingly weaker timing claim; the verifier
 reports its actual delay. How odds matched outcomes is measured separately: the forward test's
 reports (below) measure the frozen model BF on the same live inputs (which model served when:
-prereg/SERVED_MODELS.md), and the daily accuracy report, once it is published, scores the predictions served.
+prereg/SERVED_MODELS.md), and the daily accuracy report (public since November 22, 2026, starting with October 18,
+2026) scores the predictions served.
 
 FreeTSA's clock and signing key are trusted for RFC 3161 time. Published
 certificates must themselves be obtained from a trusted source; downloading a
@@ -250,7 +251,7 @@ The reports:
 
 ## Daily accuracy report
 
-Once it is published, [Daily accuracy](report.html) shows each fully
+[Daily accuracy](report.html) shows each fully
 revealed UTC day: a calibration chart, headline scores, alert precision/recall,
 and the most confident misses in both directions. Switch between every committed minute and the **first
 committed prediction per coin per UTC hour**. Selection precedes censoring; a
@@ -258,8 +259,8 @@ missing label is never replaced by a later prediction. Both samples remain
 correlated; Wilson intervals are descriptive binomial intervals, not independent
 coin or temporal confidence intervals. Empty/undefined statistics are JSON `null`.
 
-Daily accuracy reports appear in `reports/` as days become fully revealed; until the first one is published
-there is no `reports/` folder and `verify.py report` (below) has nothing to check. The report job runs daily at
+Daily accuracy reports appear in `reports/` as days become fully revealed; the first, for October 18, 2026, was
+published on November 22, 2026, and `verify.py report` (below) checks any of them. The report job runs daily at
 **06:20 UTC** and builds completed, fully revealed days, oldest first; the hourly publisher (:35) checks and
 publishes new reports (one per run in this deployment). With the normal 24-hour reveal delay, day D is fully revealed around
 **D+2 00:35 UTC**, and its report normally arrives at the first :35 publisher run after the D+2 06:20
@@ -369,5 +370,35 @@ absolute 1e−11); integers/keys are exact. Run `verify.py chain` separately for
 signature and Bitcoin evidence. Recomputing report arithmetic does **not**
 independently establish the truth of operator-supplied market labels. Those can
 be audited against market bars using the published definition and per-row keys.
+
+### Check a label against outside prices
+
+The steps below check a label itself, with prices that are not ours:
+
+1. Pick rows from a day that has a daily report (`reports/index.json` lists them; a day's
+   label files are published with its report, normally around D+2 06:35 UTC).
+   `https://api.hodlodds.com/track/reveal/<day>/<HH>.tsv.gz` holds each minute's
+   predictions (`t`, `mint`, `kind`, `p`, `level`; no header line);
+   `<day>/<HH>.labels.tsv.gz` beside it holds their labels (`y`, `first_cross_min`). Take
+   several `sol` rows with a high `p` and several with a low one, labelled 1 and 0. A row
+   with an empty `y` was dropped, not labelled; its `drop_reason` says why.
+2. Open each token's 1-minute chart on a third-party site, for example
+   `https://dexscreener.com/solana/<mint>` or GeckoTerminal, at the minute `t` (Unix
+   seconds, UTC). Use the token's own PumpSwap pool, the one pump.fun made for it at
+   migration: a token is scored only after migration, and the label reads only that
+   pool's SOL-quoted bars. The bonding curve before migration, a pool someone else made
+   for the same token, and another venue's pool do not count.
+3. Reference: the close of the last 1-minute bar starting between `t−300` and `t−60`.
+   The row is a crash (`y` = 1) when a 1-minute bar starting between `t` and `t+3540`
+   (60 minutes by the clock, however few bars the chart prints) closes at or below 10%
+   of that reference; `first_cross_min` is the first such bar's offset from `t` in
+   minutes (0–59).
+4. Outside charts are built from the same on-chain trades by other code, and may be
+   priced in USD rather than SOL. Our bars also leave out a trade when the pool holds
+   less than 0.001 or more than 100,000 SOL, when its price is more than 50 times away
+   from the median of the token's previous 200 trades that UTC day, or when it reached
+   us after its minute was written; a short gap in our feed can miss trades too. Clear
+   cases are expected to match; a close near the 10% line, a minute with no trades, or a
+   fall of more than 98% within a few trades can differ between sources.
 
 Odds, not guarantees. Not financial advice.
