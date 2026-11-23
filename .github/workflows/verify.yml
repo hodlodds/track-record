@@ -1,0 +1,184 @@
+# Runs this repository's own verify.py on GitHub's runner every day, so the checks are run by a party other than
+# HodlOdds and every run is listed publicly (the Actions tab). Read only: no secret, no token, no third-party action.
+#   - the timestamp chain: every minute's fingerprint recomputed and every FreeTSA signature checked with OpenSSL,
+#     over the last 7 days (the last 5 weeks on the scheduled Sunday run, the whole chain on a run started by hand),
+#     from the first day in chain/index.txt on or after that date; the Bitcoin proofs are listed and the input file
+#     published beside each is compared with the chain file; the proofs themselves are not verified (no ots here);
+#   - the newest daily report: its metrics against the committed predictions and the published labels; a failed
+#     attempt is tried once more after 60 s, after asking api.hodlodds.com again (a real mismatch fails twice; both
+#     outputs stay in the log; if the API no longer answers, the report is not checked: a warning).
+# A run is red when a check fails or a step cannot finish. LATE minutes (exit 4), pending (exit 3) and a day when
+# api.hodlodds.com does not answer the runner (no connection, a timeout, HTTP 403, 429 or 5xx for the day's first
+# reveal file, at the address reveal-status.json gives verify.py: the report is then not checked) are warnings, listed
+# in the run's summary; any other answer (a 404, for example) goes to verify.py, which judges it. Every run ends with a
+# notice "Result: chain=<exit> report=<exit or unreachable or missing>".
+name: verify
+
+on:
+  schedule:
+    - cron: '20 7 * * *'
+  push:
+    branches: [main]
+    paths: ['reports/index.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 180 || 40 }}
+    steps:
+      - name: Fetch this commit (by its sha; no credentials are stored)
+        run: |
+          git init -q repo
+          ok=0
+          for i in 1 2 3; do
+            if git -C repo fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "${GITHUB_SHA}"; then ok=1; break; fi
+            echo "fetch attempt $i failed"
+            [ "$i" = 3 ] || sleep 15
+          done
+          [ "$ok" = 1 ] || exit 1
+          git -C repo checkout -q FETCH_HEAD
+          python3 --version
+          openssl version
+
+      - name: Timestamp chain
+        run: |
+          cd repo
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            want=
+          elif [ "${GITHUB_EVENT_NAME}" = schedule ] && [ "$(date -u +%u)" = 7 ]; then
+            want=$(date -u -d '35 days ago' +%F)
+          else
+            want=$(date -u -d '7 days ago' +%F)
+          fi
+          since=
+          if [ -n "$want" ]; then
+            # the first indexed day on or after it (a day with no file does not fail the run); none: the wanted day,
+            # which verify.py refuses (no day published for that long)
+            since=$(awk -v w="$want" '$1 >= w {print $1; exit}' chain/index.txt 2>/dev/null || true)
+            since=${since:-$want}
+          fi
+          echo "${since:-the first minute}" > ../chain.since
+          rc=0
+          python3 -I verify.py --dir . chain ${since:+--since "$since"} > ../chain.txt 2>&1 || rc=$?
+          echo "$rc" > ../chain.rc
+          { grep -v 'FreeTSA genTime' ../chain.txt || true; } | tail -n 60
+
+      - name: Newest daily report
+        run: |
+          cd repo
+          day=$(python3 -I -c 'import json; print(max(json.load(open("reports/index.json"))))')
+          echo "$day" > ../report.day
+          probe() {   # exit 3: api.hodlodds.com did not answer (no connection, a timeout, HTTP 403, 429 or 5xx); 0: it answered
+            python3 -I -c '
+          import json, socket, sys, urllib.error, urllib.request
+          url = json.load(open("reveal-status.json"))["url"].rstrip("/") + "/" + sys.argv[1] + "/00.tsv.gz"
+          try:
+              urllib.request.urlopen(url, timeout=30).read(1)
+          except urllib.error.HTTPError as exc:
+              print("HTTP %d" % exc.code)
+              sys.exit(3 if exc.code in (403, 429) or exc.code >= 500 else 0)
+          except (urllib.error.URLError, socket.timeout, OSError) as exc:
+              print(str(getattr(exc, "reason", exc))[:80])
+              sys.exit(3)
+          ' "$day"
+          }
+          rc=0
+          probe > ../probe.txt 2>&1 || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo unreachable > ../report.rc
+            cat ../probe.txt
+            exit 0
+          fi
+          rc=0
+          python3 -I verify.py --dir . report "$day" > ../report.txt 2>&1 || rc=$?
+          if [ "$rc" = 1 ]; then
+            echo "report, first attempt: exit 1; one more attempt in 60 s"
+            tail -n 20 ../report.txt
+            mv ../report.txt ../report.first.txt
+            sleep 60
+            rc=0
+            probe > ../probe.txt 2>&1 || rc=$?
+            if [ "$rc" = 3 ]; then
+              echo unreachable > ../report.rc
+              echo "api.hodlodds.com no longer answers: the report is not checked"
+              cat ../probe.txt
+              exit 0
+            fi
+            rc=0
+            python3 -I verify.py --dir . report "$day" > ../report.txt 2>&1 || rc=$?
+          fi
+          echo "$rc" > ../report.rc
+          tail -n 20 ../report.txt
+
+      - name: Summary and verdict
+        if: always()
+        run: |
+          rc_of() { if [ -s "$1" ]; then cat "$1"; else echo missing; fi; }
+          why=$({ head -c 80 probe.txt 2>/dev/null || true; } | tr -d '\n|`')
+          word() {
+            case "$1" in
+              0) echo PASS ;;
+              3) echo 'pending (warning)' ;;
+              4) echo 'LATE minutes (warning)' ;;
+              unreachable) echo "not checked: api.hodlodds.com did not answer the runner (${why}; warning)" ;;
+              missing) echo 'did not run' ;;
+              *) echo "FAIL (exit $1)" ;;
+            esac
+          }
+          c=$(rc_of chain.rc)
+          r=$(rc_of report.rc)
+          {
+            echo "## verify.py on GitHub's runner"
+            echo
+            echo "Commit \`${GITHUB_SHA}\`, run at $(date -u +%FT%TZ)."
+            echo
+            echo '| Check | Result |'
+            echo '|---|---|'
+            echo "| Timestamp chain since $(cat chain.since 2>/dev/null) | $(word "$c") |"
+            echo "| Daily report $(cat report.day 2>/dev/null) | $(word "$r") |"
+            echo
+            if command -v ots >/dev/null 2>&1; then
+              echo 'Bitcoin proofs: each verified with ots in this run.'
+            else
+              echo 'Bitcoin proofs: listed, and the input file published beside each matches the chain file; the proofs themselves are not verified in this run (ots is not installed on the runner).'
+            fi
+            if [ -e report.first.txt ] && [ "$r" = unreachable ]; then
+              echo
+              echo "The report's first attempt failed (its lines below); then api.hodlodds.com did not answer, so the report is not checked."
+            elif [ -e report.first.txt ]; then
+              echo
+              echo 'The report ran twice: the first attempt failed (its lines below), the second gave the result above.'
+            fi
+            echo
+            echo '```'
+            { grep -E '^(Verified|First covering|LATE|PENDING|Bitcoin proof|FAIL|[0-9-]+: not yet anchored)' chain.txt 2>/dev/null || true; } | head -n 80
+            if [ -e report.first.txt ]; then
+              { grep -E '^(FAIL|Error|Traceback)' report.first.txt 2>/dev/null || true; } | head -n 5 | sed 's/^/first attempt: /'
+            fi
+            grep -E '^(PASS|FAIL|PENDING|Relied on|Market labels)' report.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Result::chain=$c report=$r"
+          bad=0
+          for v in "$c" "$r"; do
+            case "$v" in
+              0) ;;
+              3) echo '::warning title=Pending::a stamp or a reveal is not yet due' ;;
+              4) echo '::warning title=LATE minutes::some minutes were first stamped more than 600 s after them (see the summary)' ;;
+              unreachable) echo "::warning title=Report not checked::api.hodlodds.com did not answer GitHub's runner (${why})" ;;
+              *) bad=1 ;;
+            esac
+          done
+          if [ "$bad" != 0 ]; then echo '::error title=Check failed or did not finish::see the summary'; exit 1; fi
