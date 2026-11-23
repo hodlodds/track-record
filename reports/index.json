@@ -68,5 +68,15 @@
     "n_committed": 1233355,
     "n_dropped": 0,
     "n_labelled": 1233355
+  },
+  "2026-10-25": {
+    "ap": 0.6781370364617461,
+    "ap_over_prevalence": 64.81069443682378,
+    "brier": 0.0049758055683158066,
+    "brier_skill": 0.5194254931263275,
+    "crash_rate": 0.010463350876802916,
+    "n_committed": 1259348,
+    "n_dropped": 0,
+    "n_labelled": 1259348
   }
 }
