@@ -2,8 +2,15 @@
 # HodlOdds and every run is listed publicly (the Actions tab). Read only: no secret, no token, no third-party action.
 #   - the timestamp chain: every minute's fingerprint recomputed and every FreeTSA signature checked with OpenSSL,
 #     over the last 7 days (the last 5 weeks on the scheduled Sunday run, the whole chain on a run started by hand),
-#     from the first day in chain/index.txt on or after that date; the Bitcoin proofs are listed and the input file
-#     published beside each is compared with the chain file; the proofs themselves are not verified (no ots here);
+#     from the first day in chain/index.txt on or after that date;
+#   - the Bitcoin proofs of the same days, by .github/scripts/ots_check.py (the Python standard library only, no ots
+#     client): the input published beside each proof is the chain file, and the proof's path from that file's SHA-256
+#     reaches the merkle root of a Bitcoin block whose header blockstream.info and mempool.space both serve (the same
+#     block at that height, the header hashing to it). A day not anchored or only pending a day after it ends, or a
+#     block not confirmed by both explorers (no answer, a refusal of the runner, a disagreement between them, a
+#     mismatch near the tip or seen by one explorer only), is a warning (exit 3); a proof that does not hold fails; a
+#     day not anchored yet, before it is due, is neither. The checker stops asking after 10 minutes (then warns), and
+#     its step after 15, so the report below is still checked;
 #   - the newest daily report: its metrics against the committed predictions and the published labels; a failed
 #     attempt is tried once more after 60 s, after asking api.hodlodds.com again (a real mismatch fails twice; both
 #     outputs stay in the log; if the API no longer answers, the report is not checked: a warning).
@@ -11,7 +18,7 @@
 # api.hodlodds.com does not answer the runner (no connection, a timeout, HTTP 403, 429 or 5xx for the day's first
 # reveal file, at the address reveal-status.json gives verify.py: the report is then not checked) are warnings, listed
 # in the run's summary; any other answer (a 404, for example) goes to verify.py, which judges it. Every run ends with a
-# notice "Result: chain=<exit> report=<exit or unreachable or missing>".
+# notice "Result: chain=<exit> ots=<exit> report=<exit or unreachable or missing>".
 name: verify
 
 on:
@@ -75,6 +82,18 @@ jobs:
           echo "$rc" > ../chain.rc
           { grep -v 'FreeTSA genTime' ../chain.txt || true; } | tail -n 60
 
+      - name: Bitcoin proofs (no ots client; block headers from two explorers)
+        timeout-minutes: 15
+        continue-on-error: true    # a stalled step still lets the report run; its missing result makes the run red
+        run: |
+          cd repo
+          since=$(cat ../chain.since 2>/dev/null || true)
+          case "$since" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) since= ;; esac
+          rc=0
+          python3 -I .github/scripts/ots_check.py --dir . ${since:+--since "$since"} > ../ots.txt 2>&1 || rc=$?
+          echo "$rc" > ../ots.rc
+          tail -n 60 ../ots.txt
+
       - name: Newest daily report
         run: |
           cd repo
@@ -137,7 +156,15 @@ jobs:
               *) echo "FAIL (exit $1)" ;;
             esac
           }
+          oword() {
+            case "$1" in
+              0) echo 'PASS (each day verified, or not due yet)' ;;
+              3) echo 'warning: a day not yet anchored a day after it ended, or a block not confirmed by both explorers' ;;
+              *) word "$1" ;;
+            esac
+          }
           c=$(rc_of chain.rc)
+          o=$(rc_of ots.rc)
           r=$(rc_of report.rc)
           {
             echo "## verify.py on GitHub's runner"
@@ -147,13 +174,17 @@ jobs:
             echo '| Check | Result |'
             echo '|---|---|'
             echo "| Timestamp chain since $(cat chain.since 2>/dev/null) | $(word "$c") |"
+            echo "| Bitcoin proofs of those days | $(oword "$o") |"
             echo "| Daily report $(cat report.day 2>/dev/null) | $(word "$r") |"
             echo
-            if command -v ots >/dev/null 2>&1; then
-              echo 'Bitcoin proofs: each verified with ots in this run.'
-            else
-              echo 'Bitcoin proofs: listed, and the input file published beside each matches the chain file; the proofs themselves are not verified in this run (ots is not installed on the runner).'
-            fi
+            case "$o" in
+              0) echo 'Bitcoin proofs: checked by .github/scripts/ots_check.py (no ots client). For each day marked "verified" below, the input published beside its proof is the chain file, and the proof'"'"'s path from that file'"'"'s SHA-256 reaches the merkle root of a Bitcoin block whose header blockstream.info and mempool.space both serve (the same block at that height, the header hashing to it). A day marked "not due yet" is not anchored yet and is not verified in this run.' ;;
+              3) echo 'Bitcoin proofs: checked by .github/scripts/ots_check.py (no ots client); the WARNING and PENDING lines below say which day is not yet anchored or which block was not confirmed by both explorers. Each "verified" line was checked as on a green run.' ;;
+              missing) echo 'Bitcoin proofs: not checked (the step did not finish).' ;;
+              2) echo 'Bitcoin proofs: the checker itself failed (exit 2), which says nothing of a proof: a FAIL line below names each day it could not check (the others were checked), or says it could not list the days (then none were).' ;;
+              1) echo 'Bitcoin proofs: a proof does not hold, or a file is not as published (the FAIL lines below).' ;;
+              *) echo "Bitcoin proofs: the checker ended with exit $o (see the log); the days it did not reach are not checked." ;;
+            esac
             if [ -e report.first.txt ] && [ "$r" = unreachable ]; then
               echo
               echo "The report's first attempt failed (its lines below); then api.hodlodds.com did not answer, so the report is not checked."
@@ -163,15 +194,21 @@ jobs:
             fi
             echo
             echo '```'
-            { grep -E '^(Verified|First covering|LATE|PENDING|Bitcoin proof|FAIL|[0-9-]+: not yet anchored)' chain.txt 2>/dev/null || true; } | head -n 80
+            { grep -E '^(Verified|First covering|LATE|PENDING|FAIL)' chain.txt 2>/dev/null || true; } | head -n 80
+            { grep -E '^(Bitcoin proof|PENDING Bitcoin|WARNING Bitcoin|FAIL Bitcoin)' ots.txt 2>/dev/null || true; } | head -n 80
             if [ -e report.first.txt ]; then
               { grep -E '^(FAIL|Error|Traceback)' report.first.txt 2>/dev/null || true; } | head -n 5 | sed 's/^/first attempt: /'
             fi
             grep -E '^(PASS|FAIL|PENDING|Relied on|Market labels)' report.txt 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=Result::chain=$c report=$r"
+          echo "::notice title=Result::chain=$c ots=$o report=$r"
           bad=0
+          case "$o" in
+            0) ;;
+            3) echo '::warning title=Bitcoin proofs::a day is not yet anchored a day after it ended, or a block was not confirmed by both explorers (see the summary)' ;;
+            *) bad=1 ;;
+          esac
           for v in "$c" "$r"; do
             case "$v" in
               0) ;;
