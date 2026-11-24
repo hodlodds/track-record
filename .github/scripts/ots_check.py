@@ -15,7 +15,11 @@ runner, a disagreement between them, a mismatch near the tip or seen by one expl
 spent). 1: a proof does not hold, or a file is not as published. 2: the checker itself failed on a day (its FAIL
 line names the day and where; the other days are still checked) or listing the days. An explorer that does not answer
 is not asked again in the same run, and no request starts after BUDGET_S seconds, so a run ends in about that time
-even when an explorer stalls.
+even when an explorer stalls. A connection tries an explorer's IPv4 addresses first, each for at most CONNECT_S
+seconds and all of them for at most CONNECT_TOTAL_S, the address that last connected before the others and one that
+failed after them (the first run on GitHub's runner, 24 Nov 2026, spent its budget on 28 requests; its numbers fit 20 s
+waits on addresses the runner could not reach before one it could). The days are checked and printed newest first, so a spent budget leaves the oldest
+unchecked; then a line of each explorer's requests and times, then the totals.
 Usage: python3 -I ots_check.py --dir REPO [--since YYYY-MM-DD] [--now UNIX_SECONDS]
 """
 import argparse
@@ -30,6 +34,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 MAGIC = b'\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94'
@@ -48,8 +53,11 @@ DUE_S = 24 * 3600                                 # a day must be anchored a day
 DAY = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}\Z')
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 USER_AGENT = 'ots-check/1'
-PAUSE_S = 0.25                                    # between two requests to one explorer
+PAUSE_S = 0.5                                     # after each request: about one a second to each explorer
 BUDGET_S = 600                                    # no request starts later in a run (the workflow's step: 15 min)
+CONNECT_S = 10                                    # one address's connection attempt (TCP's retries at 1, 3 and 7 s)
+CONNECT_TOTAL_S = 20                              # all of one connection's attempts (the answer then has 20 s)
+CUT_SLACK_S = 1                                   # a wait the total cut by more than this is a cut wait (Fable r2 1)
 
 
 class ProofError(ValueError):
@@ -206,6 +214,87 @@ def clean(text):
     return re.sub(r'[^A-Za-z0-9 .,:;/()_=+%-]', '?', text)[:80]
 
 
+ADDRESSES = {}       # (host, port) -> the addresses to try, in order; looked up once per run
+CONNECTS = {}        # host -> {'lookup_s', 'connect_s': seconds spent looking up and connecting, 'failed': {'IPv4': n}}
+RETRIES = {}         # host -> retries (attempts after the first) after a 429, a 5xx or no answer
+
+
+def family_name(family):
+    return {socket.AF_INET: 'IPv4', getattr(socket, 'AF_INET6', None): 'IPv6'}.get(family, 'other')
+
+
+def connect(address, timeout=None, source_address=None):
+    """socket.create_connection for the explorers: the host's addresses are looked up once per run, IPv4 first; each
+    is tried for at most CONNECT_S seconds and all of one connection's attempts for at most CONNECT_TOTAL_S, so a
+    request that starts just before the run's budget ends cannot outlast the workflow's step (round 1 gave each address
+    20 s, with no total). An address that fails goes behind the others, so the next attempt (fetch's retry) reaches the
+    addresses not tried yet (Fable r1 1: two silent addresses before a live one) and the one that connects is tried
+    first the next time; a timeout in a wait the total cut short by more than CUT_SLACK_S says nothing of its address,
+    which keeps its place (it is the connection's last attempt; the second address's wait is the total less the first's
+    10 s and the clock's few milliseconds over it, a full wait). The seconds noted are TCP's: a slow TLS handshake counts
+    with the answer. The socket then has the request's own timeout for the answer."""
+    host = address[0]
+    note = CONNECTS.setdefault(host.lower(), {'lookup_s': 0.0, 'connect_s': 0.0, 'failed': {}})
+    if address not in ADDRESSES:
+        started = time.monotonic()
+        try:
+            found = socket.getaddrinfo(host, address[1], 0, socket.SOCK_STREAM)
+        finally:
+            note['lookup_s'] += time.monotonic() - started
+        ADDRESSES[address] = sorted(found, key=lambda info: info[0] != socket.AF_INET)
+    order = ADDRESSES[address]
+    limit = min(CONNECT_S, timeout) if isinstance(timeout, (int, float)) else CONNECT_S
+    error = OSError('no address for ' + host)
+    until = time.monotonic() + CONNECT_TOTAL_S
+    for info in list(order):
+        left = until - time.monotonic()
+        if left <= 0:
+            break
+        family, kind, proto, _, sockaddr = info
+        sock = None
+        started = time.monotonic()
+        wait = min(limit, left)
+        try:
+            sock = socket.socket(family, kind, proto)        # inside: a family the host lacks is one more failure
+            sock.settimeout(wait)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+        except OSError as exc:
+            note['connect_s'] += time.monotonic() - started
+            if sock is not None:
+                sock.close()
+            name = family_name(family)
+            note['failed'][name] = note['failed'].get(name, 0) + 1
+            error = exc
+            # code review r2 2: a cut wait keeps its place; Fable r2 1: only one cut by more than CUT_SLACK_S (with an
+            # exact ">= limit" the second address's 9.998 s counted as cut, so two silent addresses never both went behind)
+            if wait >= limit - CUT_SLACK_S or not isinstance(exc, socket.timeout):
+                order.remove(info)
+                order.append(info)
+            continue
+        note['connect_s'] += time.monotonic() - started
+        sock.settimeout(timeout if isinstance(timeout, (int, float)) else socket.getdefaulttimeout())
+        return sock                 # every address tried before it failed and went behind: it is first next time
+    raise error
+
+
+class Connection(http.client.HTTPSConnection):
+    """An HTTPS connection made by connect() above; its certificate and host name are checked as usual."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect
+
+
+class Handler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(Connection, req, context=self._context)
+
+
+OPEN = urllib.request.build_opener(Handler).open
+
+
 def fetch(url, retries=2):
     """The answer's text, or raises NoBlock (HTTP 404: the explorer has no such block) or OSError (no usable
     answer: the network, a timeout or a broken response, HTTP 429 or 5xx after retries, and any other HTTP error at
@@ -213,7 +302,7 @@ def fetch(url, retries=2):
     for attempt in range(retries + 1):
         try:
             request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-            with urllib.request.urlopen(request, timeout=20) as answer:
+            with OPEN(request, timeout=20) as answer:
                 return answer.read(4097).decode('ascii', 'replace').strip()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -224,6 +313,8 @@ def fetch(url, retries=2):
         except (urllib.error.URLError, socket.timeout, OSError, http.client.HTTPException, ValueError) as exc:
             error = OSError(clean(str(getattr(exc, 'reason', exc))) or type(exc).__name__)
         if attempt < retries:
+            host = urllib.parse.urlsplit(url).hostname or ''
+            RETRIES[host] = RETRIES.get(host, 0) + 1
             time.sleep(2 + 3 * attempt)
     raise error
 
@@ -234,13 +325,11 @@ class Explorers:
     def __init__(self, bases=EXPLORERS, max_target=None, pause=PAUSE_S, budget=BUDGET_S):
         self.bases, self.max_target, self.pause, self.budget = bases, max_target, pause, budget
         self.cache, self.tips, self.down = {}, {}, {}
+        self.timing = {}          # base -> (requests, seconds, the slowest request's seconds), the pause not counted
         self.deadline = time.monotonic() + budget
 
     def _get(self, url):
-        out = fetch(url)
-        if self.pause:
-            time.sleep(self.pause)
-        return out
+        return fetch(url)
 
     def _ask(self, base, url):
         """One request to one explorer. One that did not answer is not asked again in this run (each unanswered
@@ -249,11 +338,41 @@ class Explorers:
             raise OSError(self.down[base])
         if time.monotonic() > self.deadline:
             raise OSError('not asked: the run spent its %d s' % self.budget)
+        started = time.monotonic()
         try:
             return self._get(url)
         except OSError as exc:
             self.down[base] = 'not asked again after %s' % exc
             raise
+        finally:
+            spent = time.monotonic() - started
+            count, total, slowest = self.timing.get(base, (0, 0.0, 0.0))
+            self.timing[base] = (count + 1, total + spent, max(slowest, spent))
+            if self.pause:
+                time.sleep(self.pause)
+
+    def timing_line(self):
+        """Each explorer's requests in this run, their retries (attempts after a request's first, after a 429, a 5xx or
+        no answer), their times (a request's time holds its retries and their waits, not the pause after it) and the
+        seconds spent connecting in all (TCP, every attempt on every address: a slow connection shows here; a slow
+        TLS handshake or answer does not), the connection attempts that failed (another address was then tried) and
+        the time spent looking up addresses. Only the explorers' own host names and numbers: a host an answer
+        redirected to is not named. The notes are found by the base's host name as urllib reads it (lower case, no
+        port), the key fetch and connect() use."""
+        parts, failed, lookup = [], [], 0.0
+        for base in self.bases:
+            host, key = name(base), urllib.parse.urlsplit(base).hostname or ''
+            count, total, slowest = self.timing.get(base, (0, 0.0, 0.0))
+            note = CONNECTS.get(key, {'lookup_s': 0.0, 'connect_s': 0.0, 'failed': {}})
+            again = RETRIES.get(key, 0)
+            parts.append('%s %s' % (host, 'no request' if not count else
+                                    '%d request%s, %d retr%s, %.1f s on average, the slowest %.1f s, connecting %.1f s in all'
+                                    % (count, '' if count == 1 else 's', again, 'y' if again == 1 else 'ies',
+                                       total / count, slowest, note.get('connect_s', 0.0))))
+            lookup += note['lookup_s']
+            failed += ['%s %s %d' % (host, family, n) for family, n in sorted(note['failed'].items())]
+        return ('Bitcoin proofs, explorers: %s (the times hold the retries and their waits); connection attempts that '
+                'failed: %s; address lookups %.1f s') % ('; '.join(parts), ', '.join(failed) or 'none', lookup)
 
     def tip(self, base):
         if base not in self.tips:
@@ -417,7 +536,7 @@ def main(argv=None, explorers=None):
         print('FAIL Bitcoin proofs: no day to check%s' % (' since ' + args.since if args.since else ''))
         return 1
     counts = {'ok': 0, 'note': 0, 'warn': 0, 'fail': 0, 'crash': 0}
-    for day in days:
+    for day in reversed(days):                       # newest first: a spent budget leaves the oldest days unchecked
         try:
             status, line = check_day(args.dir, day, explorers, now)
         except Exception as exc:                     # this day only, the others are still checked (code review r2 4, 5)
@@ -425,6 +544,10 @@ def main(argv=None, explorers=None):
                 day, type(exc).__name__, where(exc))
         counts[status] += 1
         print(line)
+    try:
+        print(explorers.timing_line())
+    except Exception as exc:                         # a line of times never decides a run
+        print('Bitcoin proofs, explorers: the times could not be written (%s at %s)' % (type(exc).__name__, where(exc)))
     print('Bitcoin proofs: %d verified, %d failed, %d with a warning, %d not due yet%s (%s to %s)' % (
         counts['ok'], counts['fail'], counts['warn'], counts['note'],
         ', %d the checker could not check' % counts['crash'] if counts['crash'] else '', days[0], days[-1]))
