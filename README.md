@@ -1,5 +1,9 @@
 # HodlOdds public track record
 
+[![verify](https://github.com/hodlodds/track-record/actions/workflows/verify.yml/badge.svg)](https://github.com/hodlodds/track-record/actions/workflows/verify.yml)
+Green: no check failed in GitHub's latest run of `verify.py`. Its warnings (LATE minutes, a report not checked) are in
+that run's summary; see Quick check.
+
 Check a prediction you bought at **https://hodlodds.github.io/track-record/**.
 Public evidence begins at 2026-10-18 16:49 UTC. Every stored prediction in each
 committed minute is included, including experimental scores and empty minutes.
@@ -22,6 +26,16 @@ python3 verify.py --dir . chain --since 2026-11-01
 `chain` recomputes the fingerprints from the files, checks each FreeTSA signature with OpenSSL and lists the Bitcoin
 proofs. It exits 0 when every check passes, 4 when it reports LATE minutes and 1 on any failure (details under
 "Three ways to verify"). Without `--since` it audits from the first minute, 2026-10-18 16:49 UTC.
+
+GitHub's own runner also runs this `verify.py` on this repository every day
+([workflow](https://github.com/hodlodds/track-record/blob/main/.github/workflows/verify.yml); its runs are listed under
+the repository's Actions tab): `chain` over the last 7 days (the last 5 weeks in the scheduled Sunday run, the whole
+chain in a run started by hand) and `report` on the newest daily report. A run is red when a check fails or cannot
+finish; a failed report is tried once more a minute later, and if api.hodlodds.com no longer answers by then, the
+report counts as not checked. A run is green otherwise, also when it has warnings: LATE minutes, or a day when
+api.hodlodds.com does not answer or refuses the runner, and on such a day the report is not checked. The runner does
+not verify the Bitcoin proofs (`ots` is not installed there): `chain` lists them and checks that the input file
+published beside each proof is the chain file; whether a proof stamps that file is what `ots verify` checks.
 
 ## What a score means
 
