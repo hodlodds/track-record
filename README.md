@@ -1,8 +1,9 @@
 # HodlOdds public track record
 
 [![verify](https://github.com/hodlodds/track-record/actions/workflows/verify.yml/badge.svg)](https://github.com/hodlodds/track-record/actions/workflows/verify.yml)
-Green: no check failed in GitHub's latest run of `verify.py`. Its warnings (LATE minutes, a report not checked) are in
-that run's summary; see Quick check.
+Green: no check failed in GitHub's latest run of `verify.py` and of the Bitcoin proof check. Its warnings (LATE minutes,
+a report not checked, a Bitcoin proof not yet anchored or not confirmed by both block explorers) are in that run's
+summary; see Quick check.
 
 Check a prediction you bought at **https://hodlodds.github.io/track-record/**.
 Public evidence begins at 2026-10-18 16:49 UTC. Every stored prediction in each
@@ -27,21 +28,48 @@ python3 verify.py --dir . chain --since 2026-11-01
 proofs. It exits 0 when every check passes, 4 when it reports LATE minutes and 1 on any failure (details under
 "Three ways to verify"). Without `--since` it audits from the first minute, 2026-10-18 16:49 UTC.
 
-GitHub's own runner also runs this `verify.py` on this repository every day
+GitHub's own runner also checks this repository every day
 ([workflow](https://github.com/hodlodds/track-record/blob/main/.github/workflows/verify.yml); its runs are listed under
-the repository's Actions tab): `chain` over the last 7 days (the last 5 weeks in the scheduled Sunday run, the whole
-chain in a run started by hand) and `report` on the newest daily report. A run is red when a check fails or cannot
-finish; a failed report is tried once more a minute later, and if api.hodlodds.com no longer answers by then, the
-report counts as not checked. A run is green otherwise, also when it has warnings: LATE minutes, or a day when
-api.hodlodds.com does not answer or refuses the runner, and on such a day the report is not checked. The runner does
-not verify the Bitcoin proofs (`ots` is not installed there): `chain` lists them and checks that the input file
-published beside each proof is the chain file; whether a proof stamps that file is what `ots verify` checks.
+the repository's Actions tab), over the last 7 days (the last 5 weeks in the scheduled Sunday run, the whole chain in a
+run started by hand):
+
+* `verify.py chain` recomputes every minute's fingerprint and checks every FreeTSA signature with OpenSSL;
+* [`.github/scripts/ots_check.py`](https://github.com/hodlodds/track-record/blob/main/.github/scripts/ots_check.py)
+  checks the Bitcoin proofs of the same days without the `ots` client: the input published beside each proof must be
+  the chain file, and the proof's path from that file's SHA-256 must reach the merkle root of a Bitcoin block whose
+  header both blockstream.info and mempool.space serve (the same block at that height, the header hashing to it);
+* `verify.py report` checks the newest daily report.
+
+A run is red when a check fails or cannot finish, including a Bitcoin proof that does not hold; a failed report is tried
+once more a minute later, and if api.hodlodds.com no longer answers by then, the report counts as not checked. A run is
+green otherwise, also when it has warnings: LATE minutes; a day when api.hodlodds.com does not answer or refuses the
+runner (the report is then not checked); a day whose proof is not anchored in Bitcoin a day after the day ended; a block
+the two explorers do not both confirm (one does not answer or refuses the runner, they disagree, or a mismatch near the
+chain's tip or seen by one explorer only). The proof check goes newest day first, starts nothing new after 10 minutes (a
+request under way may still be retried) and warns about the days it did not reach. The run's summary lists the days
+newest first (at most 80 lines): the block each was verified in, or the reason for a warning.
 
 ## What a score means
 
 0.04 means about 4 in 100 tokens like this one lose 90% or more of their price within the next 60 minutes. Higher means riskier. A low number is not a safety signal: smaller or slower drops are not counted, and the odds change minute by minute.
 
 For covered SOL tokens, the 60-minute window starts at `as_of`. Scores update each minute; a saved answer is historical evidence, not current odds. Confidence is an evidence label, not a token-specific interval. Experimental non-SOL scores are not validated probabilities. The exact close-based definition appears below.
+
+## Try a covered token
+
+A token is covered while it has a SOL risk score in the latest snapshot; it drops out when it has no recent trades.
+Two free requests (no key, no payment) find one:
+
+```sh
+# The first 25 rows of the board as it was at least ten minutes ago; sort: riskiest (the default), newest, active
+curl -s 'https://api.hodlodds.com/v1/board/delayed?sort=active'
+# Take a row's "mint": is it covered now? ("stage": "covered")
+curl -s https://api.hodlodds.com/v1/coverage/TOKEN_MINT
+```
+
+The live answer for that mint is the paid `https://api.hodlodds.com/v1/risk/TOKEN_MINT` (x402). Without a payment it
+answers HTTP 402 with the price in its `PAYMENT-REQUIRED` header; a mint that is not covered now gets HTTP 404. Neither
+is charged (`hodlodds-charged: no`). Keep a paid answer and check it as below.
 
 ## Three ways to verify
 
